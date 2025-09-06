@@ -3,10 +3,10 @@ Data
 
 Trained Models
 --------------
-- `Bepler & Berger language model <http://cb.csail.mit.edu/cb/dscript/data/models/lm_v1.sav>`_
-- `Human TT3D model <http://cb.csail.mit.edu/cb/dscript/data/models/tt3d_v1.sav>`_
-- `Human Topsy-Turvy model <http://cb.csail.mit.edu/cb/dscript/data/models/topsy_turvy_v1.sav>`_ **(recommended)**
-- `Human D-SCRIPT model  <http://cb.csail.mit.edu/cb/dscript/data/models/human_v1.sav>`_ (from original D-SCRIPT paper)
+- `Bepler & Berger language model <http://cb.csail.mit.edu/cb/dscript/data/models/lm_v1.sav>`_ (`paper <https://doi.org/10.48550/arXiv.1902.08661>`_)
+- `Human TT3D model <http://cb.csail.mit.edu/cb/dscript/data/models/tt3d_v1.sav>`_ (`HuggingFace <https://huggingface.co/samsl/tt3d_human_v1>`__)
+- `Human Topsy-Turvy model <http://cb.csail.mit.edu/cb/dscript/data/models/topsy_turvy_v1.sav>`_ (`HuggingFace <https://huggingface.co/samsl/topsy_turvy_human_v1>`__, **recommended**)
+- `Human D-SCRIPT model  <http://cb.csail.mit.edu/cb/dscript/data/models/human_v1.sav>`_ (`HuggingFace <https://huggingface.co/samsl/dscript_human_v1>`__,from original D-SCRIPT paper)
 
 Pre-trained models can be loaded in the prediction script from HuggingFace hub by specifying the model name. For example, to load the Topsy-Turvy model, use `samsl/topsy_turvy_v1`.
 
