@@ -62,8 +62,11 @@ def add_args(parser):
     )
     parser.add_argument("-o", "--outfile", help="File for predictions")
     parser.add_argument(
-        "-d", "--device", type=str, default="cpu", 
-        help="Compute device to use. Options: 'cpu' or GPU index (0, 1, 2, etc.)."
+        "-d",
+        "--device",
+        type=str,
+        default="cpu",
+        help="Compute device to use. Options: 'cpu' or GPU index (0, 1, 2, etc.).",
     )
     parser.add_argument(
         "--store_cmaps",
@@ -102,11 +105,13 @@ def main(args):
     embPath = args.embeddings
     device_arg = args.device
     if device_arg.lower() == "cpu":
-        device = -1 #Refers to CPU in embed_from_fasta
+        device = -1  # Refers to CPU in embed_from_fasta
     elif device_arg.isdigit():  # Allow only nonnegative integers
         device = int(device_arg)
     else:
-        log(f"Invalid device argument: {device_arg}. Use 'cpu' or a GPU index. Using CPU.")
+        log(
+            f"Invalid device argument: {device_arg}. Use 'cpu' or a GPU index. Using CPU."
+        )
         device = -1
     threshold = args.thresh
 
@@ -120,7 +125,9 @@ def main(args):
     logFile = open(logFilePath, "w+")
 
     # Set Device
-    use_cuda = (device >= 0) and torch.cuda.is_available() and device < torch.cuda.device_count()
+    use_cuda = (
+        (device >= 0) and torch.cuda.is_available() and device < torch.cuda.device_count()
+    )
     if use_cuda:
         torch.cuda.set_device(device)
         log(

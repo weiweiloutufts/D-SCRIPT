@@ -1,12 +1,12 @@
 import sys
-#args: isoform table, fasta, output table, output fasta, max length, output filtered fasta
+# args: isoform table, fasta, output table, output fasta, max length, output filtered fasta
 
 prots = set()
 genes = set()
 
 with open(sys.argv[1]) as isoforms:
     for line in isoforms:
-        if line.isspace() or line[0] == "#" or not(line): 
+        if line.isspace() or line[0] == "#" or not (line):
             continue
         tokens = line.strip().split()
         gene = tokens[0]
@@ -29,16 +29,16 @@ else:
 
 with open(sys.argv[2]) as fasta:
     for line in fasta:
-        if line.isspace() or line[0] == "#" or not(line):
+        if line.isspace() or line[0] == "#" or not (line):
             continue
         if line[0] == ">":
             if collect:
                 collect = False
                 l = len(seqbuffer)
                 print(id, name, l, sep="\t", file=outTable)
-                print(">"+id, seqbuffer, sep="\n", file=outFasta)
+                print(">" + id, seqbuffer, sep="\n", file=outFasta)
                 if filter and l <= thresh:
-                    print(">"+id, seqbuffer, sep="\n", file=outFilter)
+                    print(">" + id, seqbuffer, sep="\n", file=outFilter)
                 seqbuffer = ""
                 id = ""
                 name = ""
@@ -57,15 +57,9 @@ with open(sys.argv[2]) as fasta:
 if collect:
     l = len(seqbuffer)
     print(id, name, l, sep="\t", file=outTable)
-    print(">"+id, seqbuffer, sep="\n", file=outFasta)
+    print(">" + id, seqbuffer, sep="\n", file=outFasta)
     if filter and l <= thresh:
-        print(">"+id, seqbuffer, sep="\n", file=outFilter)
+        print(">" + id, seqbuffer, sep="\n", file=outFilter)
 outTable.close()
 outFasta.close()
 outFilter.close()
-
-
-
-
-        
-

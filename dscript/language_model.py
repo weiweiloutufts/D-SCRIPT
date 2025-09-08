@@ -54,7 +54,9 @@ def embed_from_fasta(fastaPath, outputPath, device=0, verbose=False):
     :param verbose: Print embedding progress
     :type verbose: bool
     """
-    use_cuda = (device >= 0) and torch.cuda.is_available() and device < torch.cuda.device_count()
+    use_cuda = (
+        (device >= 0) and torch.cuda.is_available() and device < torch.cuda.device_count()
+    )
     if use_cuda:
         torch.cuda.set_device(device)
         if verbose:
