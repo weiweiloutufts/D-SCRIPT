@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable
 from typing import NamedTuple
 
-import h5py
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
@@ -83,10 +83,11 @@ def add_args(parser):
     data_grp.add_argument(
         "--test", required=True, help="list of validation/testing pairs"
     )
+    # Embedding Directory
     data_grp.add_argument(
-        "--embedding",
+        "--embedding-dir",
         required=True,
-        help="h5py path containing embedded sequences",
+        help="directory containing per-protein `.pt` embeddings",
     )
     data_grp.add_argument(
         "--no-augment",
@@ -98,8 +99,8 @@ def add_args(parser):
     proj_grp.add_argument(
         "--input-dim",
         type=int,
-        default=6165,
-        help="dimension of input language model embedding (per amino acid) (default: 6165)",
+        default=1280,
+        help="dimension of input language model embedding (per amino acid) (default: 1280), ESM-2 650M: 1280;ESM-C 600M: 1152",
     )
     proj_grp.add_argument(
         "--projection-dim",
@@ -540,7 +541,13 @@ def train_model(args, output):
     test_fi = args.test
     no_augment = args.no_augment
 
-    embedding_h5 = args.embedding
+    #embedding_h5 = args.embedding
+    
+    embedding_dir = Path(args.embedding_dir)
+    if not embedding_dir.exists():
+        raise FileNotFoundError(f"Embedding directory not found: {embedding_dir}")
+    if not embedding_dir.is_dir():
+        raise NotADirectoryError(f"Embedding directory is not a folder: {embedding_dir}")
 
     ########## Foldseek code #########################3
     allow_foldseek = args.allow_foldseek
@@ -604,13 +611,31 @@ def train_model(args, output):
     output.flush()
 
     all_proteins = set(train_p1).union(train_p2).union(test_p1).union(test_p2)
-
-    embeddings = {}
-    with h5py.File(embedding_h5, "r") as h5fi:
-        for prot_name in tqdm(all_proteins):
-            embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
+    
+    #######################################################################
+    # embeddings = {}
+    # with h5py.File(embedding_h5, "r") as h5fi:
+    #     for prot_name in tqdm(all_proteins):
+    #         embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
     # embeddings = load_hdf5_parallel(embedding_h5, all_proteins)
+    #######################################################################
+    
+    embeddings: dict[str, torch.Tensor] = {}
+    missing: list[str] = []
 
+    for prot in tqdm(sorted(all_proteins), desc="Loading .pt embeddings"):
+        fp = embedding_dir / f"{prot}.pt"
+        if not fp.exists():
+            missing.append(prot)
+            continue
+        emb = torch.load(fp, map_location="cpu")
+     
+        embeddings[prot] = emb
+
+    if missing:
+        print(f"❌ Missing files for {len(missing)} proteins (e.g., {missing[:8]})")
+        sys.exit(1)
+    
     # Topsy-Turvy
     run_tt = args.run_tt
     glider_weight = args.glider_weight
