@@ -8,7 +8,7 @@ import argparse
 import sys
 from collections.abc import Callable
 from typing import NamedTuple
-
+import h5py
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -30,7 +30,7 @@ from ..utils import (
     collate_paired_sequences,
     log,
 )
-
+from ..parallel_embedding_loader import EmbeddingLoader
 
 class TrainArguments(NamedTuple):
     cmd: str
@@ -85,9 +85,9 @@ def add_args(parser):
     )
     # Embedding Directory
     data_grp.add_argument(
-        "--embedding-dir",
+        "--embedding",
         required=True,
-        help="directory containing per-protein `.pt` embeddings",
+        help="directory containing per-protein `.pt` embeddings or HDF5 file with embeddings",
     )
     data_grp.add_argument(
         "--no-augment",
@@ -234,7 +234,13 @@ def add_args(parser):
 
     return parser
 
-
+def add_batch_dim_if_needed(x: torch.Tensor) -> torch.Tensor:
+        # Old HDF5 tensors were [1, L, D]; new .pt tensors are [L, D].
+        # This makes [L, D] -> [1, L, D], and leaves [B, L, D] unchanged.
+        if x.dim() == 2:
+            return x.unsqueeze(0)
+        return x
+    
 def predict_cmap_interaction(
     model,
     n0,
@@ -270,6 +276,12 @@ def predict_cmap_interaction(
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
+        
+        # Ensure 3D [B, L, D] 
+        z_a = add_batch_dim_if_needed(z_a)
+        z_b = add_batch_dim_if_needed(z_b)
+        
+        
         if use_cuda:
             z_a = z_a.cuda()
             z_b = z_b.cuda()
@@ -540,14 +552,22 @@ def train_model(args, output):
     train_fi = args.train
     test_fi = args.test
     no_augment = args.no_augment
-
-    #embedding_h5 = args.embedding
     
-    embedding_dir = Path(args.embedding_dir)
-    if not embedding_dir.exists():
-        raise FileNotFoundError(f"Embedding directory not found: {embedding_dir}")
-    if not embedding_dir.is_dir():
-        raise NotADirectoryError(f"Embedding directory is not a folder: {embedding_dir}")
+    emb_path = Path(args.embedding)
+    
+    if emb_path.is_dir():
+        embedding_mode = "pt_dir"
+        log(f"Embedding path is a directory: {emb_path}")
+    elif emb_path.is_file():
+        # Could be HDF5 or something else
+        if h5py.is_hdf5(str(emb_path)):
+            embedding_mode = "hdf5"
+            log(f"Embedding path is an HDF5 file: {emb_path}")
+        else:
+            raise ValueError(f"Embedding file is not HDF5 and not a directory: {emb_path}")
+    else:
+        raise FileNotFoundError(f"Embedding path does not exist: {emb_path}")
+   
 
     ########## Foldseek code #########################3
     allow_foldseek = args.allow_foldseek
@@ -612,29 +632,19 @@ def train_model(args, output):
 
     all_proteins = set(train_p1).union(train_p2).union(test_p1).union(test_p2)
     
-    #######################################################################
-    # embeddings = {}
-    # with h5py.File(embedding_h5, "r") as h5fi:
-    #     for prot_name in tqdm(all_proteins):
-    #         embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
-    # embeddings = load_hdf5_parallel(embedding_h5, all_proteins)
-    #######################################################################
-    
+    # Load embeddings
     embeddings: dict[str, torch.Tensor] = {}
-    missing: list[str] = []
-
-    for prot in tqdm(sorted(all_proteins), desc="Loading .pt embeddings"):
-        fp = embedding_dir / f"{prot}.pt"
-        if not fp.exists():
-            missing.append(prot)
-            continue
-        emb = torch.load(fp, map_location="cpu")
-     
-        embeddings[prot] = emb
-
-    if missing:
-        print(f"❌ Missing files for {len(missing)} proteins (e.g., {missing[:8]})")
-        sys.exit(1)
+    if embedding_mode == "pt_dir":
+        embedding_loader = EmbeddingLoader(
+            embedding_dir_name=emb_path,
+            protein_names=all_proteins,
+            num_workers=4       
+        )
+        embeddings = embedding_loader.embeddings_cpu
+    elif embedding_mode == "hdf5":
+        with h5py.File(emb_path, "r") as h5fi:
+            for prot_name in tqdm(all_proteins,desc="Loading HDF5 embeddings"):
+                embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
     
     # Topsy-Turvy
     run_tt = args.run_tt
