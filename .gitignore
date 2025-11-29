@@ -8,6 +8,8 @@ htmlcov
 **/.ipynb_checkpoints
 **/__pycache__
 dev*
+new_bash/logs/*
+results
 
 # Files
 collect_env.py
