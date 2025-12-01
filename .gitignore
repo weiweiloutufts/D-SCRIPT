@@ -8,7 +8,7 @@ htmlcov
 **/.ipynb_checkpoints
 **/__pycache__
 dev*
-new_bash/logs/*
+new_bash
 results
 
 # Files
