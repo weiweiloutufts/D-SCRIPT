@@ -166,7 +166,8 @@ class ModelInteraction(nn.Module):
             assert f0 is not None and f1 is not None
             assert isinstance(f0, torch.Tensor) and isinstance(f1, torch.Tensor)
             assert (
-                z0.get_device() == f0.get_device() and z0.get_device() == f1.get_device()
+                z0.get_device() == f0.get_device()
+                and z0.get_device() == f1.get_device()
             )
             assert f0.shape[1] == z0.shape[1] and f1.shape[1] == z1.shape[1]
 
@@ -176,6 +177,7 @@ class ModelInteraction(nn.Module):
 
         B = self.contact.cmap(e0, e1)
         C = self.contact.predict(B)
+
         return C
 
     def map_predict(
@@ -201,7 +203,8 @@ class ModelInteraction(nn.Module):
             assert f0 is not None and f1 is not None
             assert isinstance(f0, torch.Tensor) and isinstance(f1, torch.Tensor)
             assert (
-                z0.get_device() == f0.get_device() and z0.get_device() == f1.get_device()
+                z0.get_device() == f0.get_device()
+                and z0.get_device() == f1.get_device()
             )
             assert f0.shape[1] == z0.shape[1] and f1.shape[1] == z1.shape[1]
 
@@ -209,20 +212,21 @@ class ModelInteraction(nn.Module):
 
         if self.do_w:
             N, M = C.shape[2:]
+            device = C.device
 
-            x1 = -1 * torch.square(
-                (self.xx[:N] + 1 - ((N + 1) / 2)) / (-1 * ((N + 1) / 2))
-            )
+            xx_N = torch.arange(N, device=device, dtype=C.dtype)
+            xx_M = torch.arange(M, device=device, dtype=C.dtype)
 
-            x2 = -1 * torch.square(
-                (self.xx[:M] + 1 - ((M + 1) / 2)) / (-1 * ((M + 1) / 2))
-            )
+            x1 = -1 * torch.square((xx_N + 1 - ((N + 1) / 2)) / (-1 * ((N + 1) / 2)))
+
+            x2 = -1 * torch.square((xx_M + 1 - ((M + 1) / 2)) / (-1 * ((M + 1) / 2)))
 
             x1 = torch.exp(self.lambda_ * x1)
             x2 = torch.exp(self.lambda_ * x2)
 
             W = x1.unsqueeze(1) * x2
             W = (1 - self.theta) * W + self.theta
+
             yhat = C * W
 
         else:
