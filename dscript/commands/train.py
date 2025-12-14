@@ -30,7 +30,8 @@ from ..utils import (
     collate_paired_sequences,
     log,
 )
-from ..parallel_embedding_loader import EmbeddingLoader
+from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
+
 
 class TrainArguments(NamedTuple):
     cmd: str
@@ -214,7 +215,9 @@ def add_args(parser):
     misc_grp.add_argument(
         "-d", "--device", type=int, default=-1, help="compute device to use"
     )
-    misc_grp.add_argument("--checkpoint", help="checkpoint model to start training from")
+    misc_grp.add_argument(
+        "--checkpoint", help="checkpoint model to start training from"
+    )
     misc_grp.add_argument("--seed", help="Set random seed", type=int)
 
     ## Foldseek arguments
@@ -234,13 +237,7 @@ def add_args(parser):
 
     return parser
 
-def add_batch_dim_if_needed(x: torch.Tensor) -> torch.Tensor:
-        # Old HDF5 tensors were [1, L, D]; new .pt tensors are [L, D].
-        # This makes [L, D] -> [1, L, D], and leaves [B, L, D] unchanged.
-        if x.dim() == 2:
-            return x.unsqueeze(0)
-        return x
-    
+
 def predict_cmap_interaction(
     model,
     n0,
@@ -276,12 +273,11 @@ def predict_cmap_interaction(
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
-        
-        # Ensure 3D [B, L, D] 
+
+        # Ensure 3D [B, L, D]
         z_a = add_batch_dim_if_needed(z_a)
         z_b = add_batch_dim_if_needed(z_b)
-        
-        
+
         if use_cuda:
             z_a = z_a.cuda()
             z_b = z_b.cuda()
@@ -289,7 +285,9 @@ def predict_cmap_interaction(
             assert fold_record is not None and fold_vocab is not None
             f_a = get_foldseek_onehot(
                 n0[i], z_a.shape[1], fold_record, fold_vocab
-            ).unsqueeze(0)  # seqlen x vocabsize
+            ).unsqueeze(
+                0
+            )  # seqlen x vocabsize
             f_b = get_foldseek_onehot(
                 n1[i], z_b.shape[1], fold_record, fold_vocab
             ).unsqueeze(0)
@@ -552,9 +550,9 @@ def train_model(args, output):
     train_fi = args.train
     test_fi = args.test
     no_augment = args.no_augment
-    
+
     emb_path = Path(args.embedding)
-    
+
     if emb_path.is_dir():
         embedding_mode = "pt_dir"
         log(f"Embedding path is a directory: {emb_path}")
@@ -564,10 +562,11 @@ def train_model(args, output):
             embedding_mode = "hdf5"
             log(f"Embedding path is an HDF5 file: {emb_path}")
         else:
-            raise ValueError(f"Embedding file is not HDF5 and not a directory: {emb_path}")
+            raise ValueError(
+                f"Embedding file is not HDF5 and not a directory: {emb_path}"
+            )
     else:
         raise FileNotFoundError(f"Embedding path does not exist: {emb_path}")
-   
 
     ########## Foldseek code #########################3
     allow_foldseek = args.allow_foldseek
@@ -591,12 +590,12 @@ def train_model(args, output):
         train_p2 = train_df["prot2"]
         train_y = torch.from_numpy(train_df["label"].values)
     else:
-        train_p1 = pd.concat((train_df["prot1"], train_df["prot2"]), axis=0).reset_index(
-            drop=True
-        )
-        train_p2 = pd.concat((train_df["prot2"], train_df["prot1"]), axis=0).reset_index(
-            drop=True
-        )
+        train_p1 = pd.concat(
+            (train_df["prot1"], train_df["prot2"]), axis=0
+        ).reset_index(drop=True)
+        train_p2 = pd.concat(
+            (train_df["prot2"], train_df["prot1"]), axis=0
+        ).reset_index(drop=True)
         train_y = torch.from_numpy(
             pd.concat((train_df["label"], train_df["label"])).values
         )
@@ -631,21 +630,19 @@ def train_model(args, output):
     output.flush()
 
     all_proteins = set(train_p1).union(train_p2).union(test_p1).union(test_p2)
-    
+
     # Load embeddings
     embeddings: dict[str, torch.Tensor] = {}
     if embedding_mode == "pt_dir":
         embedding_loader = EmbeddingLoader(
-            embedding_dir_name=emb_path,
-            protein_names=all_proteins,
-            num_workers=4       
+            embedding_dir_name=emb_path, protein_names=all_proteins, num_workers=4
         )
         embeddings = embedding_loader.embeddings_cpu
     elif embedding_mode == "hdf5":
         with h5py.File(emb_path, "r") as h5fi:
-            for prot_name in tqdm(all_proteins,desc="Loading HDF5 embeddings"):
+            for prot_name in tqdm(all_proteins, desc="Loading HDF5 embeddings"):
                 embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
-    
+
     # Topsy-Turvy
     run_tt = args.run_tt
     glider_weight = args.glider_weight
@@ -848,7 +845,9 @@ def train_model(args, output):
 
             # Save the model
             if save_prefix is not None:
-                save_path = save_prefix + "_epoch" + str(epoch + 1).zfill(digits) + ".sav"
+                save_path = (
+                    save_prefix + "_epoch" + str(epoch + 1).zfill(digits) + ".sav"
+                )
                 log(f"Saving model to {save_path}", file=output)
                 model.cpu()
                 torch.save(model, save_path)

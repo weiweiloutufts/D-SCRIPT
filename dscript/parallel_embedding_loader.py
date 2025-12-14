@@ -12,6 +12,14 @@ def bucket_prefix2(acc: str) -> str:
     return f"{acc[:1]}/{acc[:2]}"
 
 
+def add_batch_dim_if_needed(x: torch.Tensor) -> torch.Tensor:
+    # Old HDF5 tensors were [1, L, D]; new .pt tensors are [L, D].
+    # This makes [L, D] -> [1, L, D], and leaves [B, L, D] unchanged.
+    if x.dim() == 2:
+        return x.unsqueeze(0)
+    return x
+
+
 class EmbeddingLoader:
     def __init__(self, embedding_dir_name, protein_names, num_workers=4):
         self.embedding_dir = Path(embedding_dir_name)
