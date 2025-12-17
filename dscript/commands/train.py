@@ -20,11 +20,12 @@ from tqdm import tqdm
 
 from .. import __version__
 from ..fasta import parse_dict
-from ..foldseek import fold_vocab, get_foldseek_onehot
+from ..foldseek import fold_vocab, get_foldseek_onehot, build_backbone_vocab, Foldseek3diContext
 from ..glider import glide_compute_map, glider_score
 from ..models.contact import ContactCNN
 from ..models.embedding import FullyConnectedEmbed
-from ..models.interaction import ModelInteraction
+from ..models.interaction import ModelInteraction, InteractionInputs
+
 from ..utils import (
     PairedDataset,
     collate_paired_sequences,
@@ -231,9 +232,16 @@ def add_args(parser):
         "--foldseek_fasta",
         help="foldseek fasta file containing the foldseek representation",
     )
-    # foldseek_grp.add_argument(
-    #     "--add_foldseek_after_projection", default = False, action = "store_true", help = "If set to true, adds the fold seek embedding after the projection layer"
-    # )
+    foldseek_grp.add_argument(
+        "--allow_backbone3di",
+        default=False,
+        action="store_true",
+        help="If set to true, adds the 12 state one-hot representation",
+    )
+    foldseek_grp.add_argument(
+        "--backbone3di_fasta",
+        help="FASTA file containing the 12 state representation",
+    )
 
     return parser
 
@@ -245,10 +253,7 @@ def predict_cmap_interaction(
     tensors,
     use_cuda,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None
     ###
 ):
     """
@@ -281,15 +286,18 @@ def predict_cmap_interaction(
         if use_cuda:
             z_a = z_a.cuda()
             z_b = z_b.cuda()
-        if allow_foldseek:
-            assert fold_record is not None and fold_vocab is not None
+
+        # foldseek and backbone vectors
+        f_a = f_b = b_a = b_b = None
+
+        # TODO: make better
+        if structural_context.allow_foldseek:
+            assert structural_context.fold_record is not None and structural_context.fold_vocab is not None
             f_a = get_foldseek_onehot(
-                n0[i], z_a.shape[1], fold_record, fold_vocab
-            ).unsqueeze(
-                0
-            )  # seqlen x vocabsize
+                n0[i], z_a.shape[1], structural_context.fold_record, structural_context.fold_vocab
+            ).unsqueeze(0)  # seqlen x vocabsize
             f_b = get_foldseek_onehot(
-                n1[i], z_b.shape[1], fold_record, fold_vocab
+                n1[i], z_b.shape[1], structural_context.fold_record, structural_context.fold_vocab
             ).unsqueeze(0)
 
             ## check if cuda
@@ -297,14 +305,24 @@ def predict_cmap_interaction(
                 f_a = f_a.cuda()
                 f_b = f_b.cuda()
 
-            if add_first:
-                z_a = torch.concat([z_a, f_a], dim=2)
-                z_b = torch.concat([z_b, f_b], dim=2)
+        if structural_context.allow_backbone3di:
+            assert structural_context.backbone_record is not None and structural_context.fold_vocab is not None
+            b_a = get_foldseek_onehot(
+                n0[i], z_a.shape[1], structural_context.backbone_record, structural_context.backbone_vocab
+            ).unsqueeze(0)  # seqlen x vocabsize
+            b_b = get_foldseek_onehot(
+                n1[i], z_b.shape[1], structural_context.backbone_record, structural_context.backbone_vocab
+            ).unsqueeze(0)
 
-        if allow_foldseek and (not add_first):
-            cm, ph = model.map_predict(z_a, z_b, True, f_a, f_b)
-        else:
-            cm, ph = model.map_predict(z_a, z_b)
+            ## check if cuda
+            if use_cuda:
+                b_a = b_a.cuda()
+                b_b = b_b.cuda()
+
+        cm, ph = model.map_predict(InteractionInputs(z_a, z_b,
+                                        embed_foldseek=structural_context.allow_foldseek, f0=f_a, f1=f_b,
+                                        embed_backbone=structural_context.allow_backbone3di, b0=b_a, b1=b_b
+                                  ))
         p_hat.append(ph)
         c_map_mag.append(torch.mean(cm))
     p_hat = torch.stack(p_hat, 0)
@@ -312,6 +330,7 @@ def predict_cmap_interaction(
     return c_map_mag, p_hat
 
 
+#TODO: Remove methods??
 def predict_interaction(
     model,
     n0,
@@ -319,10 +338,7 @@ def predict_interaction(
     tensors,
     use_cuda,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None
     ###
 ):
     """
@@ -345,10 +361,7 @@ def predict_interaction(
         n1,
         tensors,
         use_cuda,
-        allow_foldseek,
-        fold_record,
-        fold_vocab,
-        add_first,
+        structural_context
     )
     return p_hat
 
@@ -366,10 +379,7 @@ def interaction_grad(
     glider_mat=None,
     use_cuda=True,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None
     ###
 ):
     """
@@ -408,10 +418,7 @@ def interaction_grad(
         n1,
         tensors,
         use_cuda,
-        allow_foldseek,
-        fold_record,
-        fold_vocab,
-        add_first,
+        structural_context
     )
 
     if use_cuda:
@@ -471,10 +478,7 @@ def interaction_eval(
     tensors,
     use_cuda,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None
     ###
 ):
     """
@@ -503,10 +507,7 @@ def interaction_eval(
                 n1,
                 tensors,
                 use_cuda,
-                allow_foldseek,
-                fold_record,
-                fold_vocab,
-                add_first,
+                structural_context
             )
         )
         true_y.append(y)
@@ -568,18 +569,33 @@ def train_model(args, output):
     else:
         raise FileNotFoundError(f"Embedding path does not exist: {emb_path}")
 
-    ########## Foldseek code #########################3
+    ########## Foldseek code #########################
+
+    def load_records(enabled=False, fasta_path=""):
+        if not enabled:
+            return {}
+        assert fasta_path is not None
+        return parse_dict(fasta_path)
+
     allow_foldseek = args.allow_foldseek
-    fold_fasta_file = args.foldseek_fasta
-    # fold_vocab_file = args.foldseek_vocab
-    add_first = False
-    fold_record = {}
-    # fold_vocab = None
-    if allow_foldseek:
-        assert fold_fasta_file is not None
-        fold_fasta = parse_dict(fold_fasta_file)
-        for rec_k, rec_v in fold_fasta.items():
-            fold_record[rec_k] = rec_v
+    allow_backbone3di = args.allow_backbone3di
+
+    fold_record = load_records(allow_foldseek, args.foldseek_fasta)
+    backbone_record = load_records(allow_backbone3di, args.backbone3di_fasta)
+
+    backbone_vocab = build_backbone_vocab()
+
+    foldseek3dicontext = Foldseek3diContext(
+        # foldseek info
+        allow_foldseek    = allow_foldseek,
+        fold_record       = fold_record,
+        fold_vocab        = fold_vocab,
+        # backbone info
+        allow_backbone3di = allow_backbone3di,
+        backbone_record   = backbone_record,
+        backbone_vocab    = backbone_vocab,
+    )
+
     ##################################################
 
     train_df = pd.read_csv(train_fi, sep="\t", header=None)
@@ -665,13 +681,6 @@ def train_model(args, output):
         # Create embedding model
         input_dim = args.input_dim
 
-        ############### foldseek code ###########################
-
-        if allow_foldseek and add_first:
-            input_dim += len(fold_vocab)
-
-        ##########################################################
-
         projection_dim = args.projection_dim
 
         dropout_p = args.dropout_p
@@ -690,8 +699,10 @@ def train_model(args, output):
         log(f"\tkernel_width: {kernel_width}", file=output)
 
         proj_dim = projection_dim
-        if allow_foldseek and not add_first:
+        if allow_foldseek:
             proj_dim += len(fold_vocab)
+        if allow_backbone3di:
+            proj_dim += len(backbone_vocab)
         contact_model = ContactCNN(proj_dim, hidden_dim, kernel_width)
 
         # Create the full model
@@ -774,10 +785,7 @@ def train_model(args, output):
                 glider_map=glider_map,
                 glider_mat=glider_mat,
                 use_cuda=use_cuda,
-                allow_foldseek=allow_foldseek,
-                fold_record=fold_record,
-                fold_vocab=fold_vocab,
-                add_first=add_first,
+                structural_context=foldseek3dicontext
             )
 
             n += b
@@ -824,10 +832,7 @@ def train_model(args, output):
                 test_iterator,
                 embeddings,
                 use_cuda,
-                allow_foldseek,
-                fold_record,
-                fold_vocab,
-                add_first,
+                foldseek3dicontext
             )
             tokens = [
                 epoch + 1,
@@ -907,3 +912,4 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     add_args(parser)
     main(parser.parse_args())
+

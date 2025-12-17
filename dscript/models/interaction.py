@@ -5,6 +5,38 @@ from huggingface_hub import PyTorchModelHubMixin
 from .contact import ContactCNN
 from .embedding import FullyConnectedEmbed
 
+from dataclasses import dataclass
+
+@dataclass
+class InteractionInputs:
+    z0: torch.Tensor
+    z1: torch.Tensor
+
+    f0: torch.Tensor = None
+    f1: torch.Tensor = None
+
+    b0: torch.Tensor = None
+    b1: torch.Tensor = None
+
+    embed_foldseek: bool = False
+    embed_backbone: bool = False
+
+    def __post_init__(self):
+        if self.embed_foldseek:
+            assert self.f0 is not None and self.f1 is not None
+            assert isinstance(self.f0, torch.Tensor) and isinstance(self.f1, torch.Tensor)
+            assert (
+                self.z0.get_device() == self.f0.get_device() and self.z0.get_device() == self.f1.get_device()
+            )
+            assert self.f0.shape[1] == self.z0.shape[1] and self.f1.shape[1] == self.z1.shape[1]
+        if self.embed_backbone:
+            assert self.b0 is not None and self.b1 is not None
+            assert isinstance(self.b0, torch.Tensor) and isinstance(self.b1, torch.Tensor)
+            assert (
+                self.z0.get_device() == self.b0.get_device() and self.z0.get_device() == self.b1.get_device()
+            )
+            assert self.b0.shape[1] == self.z0.shape[1] and self.b1.shape[1] == self.z1.shape[1]
+
 
 class LogisticActivation(nn.Module):
     """
@@ -140,15 +172,7 @@ class ModelInteraction(nn.Module):
         else:
             return self.embedding(x)
 
-    def cpred(
-        self,
-        z0,
-        z1,
-        ### Foldseek embedding added
-        embed_foldseek=False,
-        f0=None,
-        f1=None,
-    ):
+    def cpred(self, inputs):
         """
         Project down input language model embeddings into low dimension using projection module
 
@@ -159,28 +183,24 @@ class ModelInteraction(nn.Module):
         :return: Predicted contact map :math:`(b \\times N \\times M)`
         :rtype: torch.Tensor
         """
-        e0 = self.embed(z0)
-        e1 = self.embed(z1)
+        e0 = self.embed(inputs.z0)
+        e1 = self.embed(inputs.z1)
 
-        if embed_foldseek:
-            assert f0 is not None and f1 is not None
-            assert isinstance(f0, torch.Tensor) and isinstance(f1, torch.Tensor)
-            assert (
-                z0.get_device() == f0.get_device()
-                and z0.get_device() == f1.get_device()
-            )
-            assert f0.shape[1] == z0.shape[1] and f1.shape[1] == z1.shape[1]
+        if inputs.embed_foldseek:
+            e0 = torch.concat([e0, inputs.f0], dim=2)
+            e1 = torch.concat([e1, inputs.f1], dim=2)
 
-            # concatenate foldseek one hot embedding
-            e0 = torch.concat([e0, f0], dim=2)
-            e1 = torch.concat([e1, f1], dim=2)
+        if inputs.embed_backbone:
+            e0 = torch.concat([e0, inputs.b0], dim=2)
+            e1 = torch.concat([e1, inputs.b1], dim=2)
 
         B = self.contact.cmap(e0, e1)
         C = self.contact.predict(B)
 
         return C
 
-    def map_predict(
+    # TODO: Temporaru overload to allow downstream (post train/evaluate) methods to work.
+    def _build_interaction_inputs(
         self,
         z0,
         z1,
@@ -188,6 +208,10 @@ class ModelInteraction(nn.Module):
         embed_foldseek=False,
         f0=None,
         f1=None,
+        ### Backbone embedding added
+        embed_backbone=False,
+        b0=None,
+        b1=None,
     ):
         """
         Project down input language model embeddings into low dimension using projection module
@@ -199,16 +223,17 @@ class ModelInteraction(nn.Module):
         :return: Predicted contact map, predicted probability of interaction :math:`(b \\times N \\times d_0), (1)`
         :rtype: torch.Tensor, torch.Tensor
         """
-        if embed_foldseek:
-            assert f0 is not None and f1 is not None
-            assert isinstance(f0, torch.Tensor) and isinstance(f1, torch.Tensor)
-            assert (
-                z0.get_device() == f0.get_device()
-                and z0.get_device() == f1.get_device()
-            )
-            assert f0.shape[1] == z0.shape[1] and f1.shape[1] == z1.shape[1]
+        return InteractionInputs(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1, embed_backbone=embed_backbone, b0=b0, b1=b1)
 
-        C = self.cpred(z0, z1, embed_foldseek, f0, f1)
+
+    def map_predict(self, *args, **kwargs):
+        if len(args) == 1 and isinstance(args[0], InteractionInputs):
+            cpredInputs = args[0]
+
+        if len(args) >= 2:
+            cpredInputs = _build_interaction_inputs(*args, **kwargs)
+
+        C = self.cpred(cpredInputs)
 
         if self.do_w:
             N, M = C.shape[2:]
@@ -245,7 +270,18 @@ class ModelInteraction(nn.Module):
             phat = self.activation(phat).squeeze()
         return C, phat
 
-    def predict(self, z0, z1, embed_foldseek=False, f0=None, f1=None):
+    # INTERNAL
+    def predict(
+        self,
+        z0,
+        z1,
+        embed_foldseek=False,
+        f0=None,
+        f1=None,
+        embed_backbone=False,
+        b0=None,
+        b1=None,
+    ):
         """
         Project down input language model embeddings into low dimension using projection module
 
@@ -256,14 +292,17 @@ class ModelInteraction(nn.Module):
         :return: Predicted probability of interaction
         :rtype: torch.Tensor, torch.Tensor
         """
-        _, phat = self.map_predict(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1)
+        _, phat = self.map_predict(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1, 
+            embed_backbone=embed_backbone, b0=b0, b1=b1)
         return phat
 
-    def forward(self, z0, z1, embed_foldseek=False, f0=None, f1=None):
+    def forward(self, z0, z1, embed_foldseek=False, f0=None, f1=None,
+                    embed_backbone=False, b0=None, b1=None):
         """
         :meta private:
         """
-        return self.predict(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1)
+        return self.predict(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1,
+            embed_backbone=embed_backbone, b0=b0, b1=b1)
 
 
 class DSCRIPTModel(ModelInteraction, PyTorchModelHubMixin):
@@ -300,3 +339,4 @@ class DSCRIPTModel(ModelInteraction, PyTorchModelHubMixin):
             lambda_init=lambda_init,
             gamma_init=gamma_init,
         )
+
