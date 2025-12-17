@@ -709,63 +709,68 @@ def train_model(args, output):
     else:
         glider_mat, glider_map = (None, None)
 
-    if args.checkpoint is None:
-        # Create embedding model
-        input_dim = args.input_dim
+    # Create embedding model
+    input_dim = args.input_dim
 
-        projection_dim = args.projection_dim
+    projection_dim = args.projection_dim
 
-        dropout_p = args.dropout_p
-        embedding_model = FullyConnectedEmbed(
-            input_dim, projection_dim, dropout=dropout_p
-        )
-        log("Initializing embedding model with:", file=output)
-        log(f"\tprojection_dim: {projection_dim}", file=output)
-        log(f"\tdropout_p: {dropout_p}", file=output)
+    dropout_p = args.dropout_p
+    embedding_model = FullyConnectedEmbed(input_dim, projection_dim, dropout=dropout_p)
+    log("Initializing embedding model with:", file=output)
+    log(f"\tprojection_dim: {projection_dim}", file=output)
+    log(f"\tdropout_p: {dropout_p}", file=output)
 
-        # Create contact model
-        hidden_dim = args.hidden_dim
-        kernel_width = args.kernel_width
-        log("Initializing contact model with:", file=output)
-        log(f"\thidden_dim: {hidden_dim}", file=output)
-        log(f"\tkernel_width: {kernel_width}", file=output)
+    # Create contact model
+    hidden_dim = args.hidden_dim
+    kernel_width = args.kernel_width
+    log("Initializing contact model with:", file=output)
+    log(f"\thidden_dim: {hidden_dim}", file=output)
+    log(f"\tkernel_width: {kernel_width}", file=output)
 
-        proj_dim = projection_dim
-        if allow_foldseek:
-            proj_dim += len(fold_vocab)
-        if allow_backbone3di:
-            proj_dim += len(backbone_vocab)
-        contact_model = ContactCNN(proj_dim, hidden_dim, kernel_width)
+    proj_dim = projection_dim
+    if allow_foldseek:
+        proj_dim += len(fold_vocab)
+    if allow_backbone3di:
+        proj_dim += len(backbone_vocab)
+    contact_model = ContactCNN(proj_dim, hidden_dim, kernel_width)
 
-        # Create the full model
-        do_w = not args.no_w
-        do_pool = args.do_pool
-        pool_width = args.pool_width
-        do_sigmoid = not args.no_sigmoid
-        log("Initializing interaction model with:", file=output)
-        log(f"\tdo_poool: {do_pool}", file=output)
-        log(f"\tpool_width: {pool_width}", file=output)
-        log(f"\tdo_w: {do_w}", file=output)
-        log(f"\tdo_sigmoid: {do_sigmoid}", file=output)
-        model = ModelInteraction(
-            embedding_model,
-            contact_model,
-            use_cuda,
-            do_w=do_w,
-            pool_size=pool_width,
-            do_pool=do_pool,
-            do_sigmoid=do_sigmoid,
-        )
+    # Create the full model
+    do_w = not args.no_w
+    do_pool = args.do_pool
+    pool_width = args.pool_width
+    do_sigmoid = not args.no_sigmoid
+    log("Initializing interaction model with:", file=output)
+    log(f"\tdo_poool: {do_pool}", file=output)
+    log(f"\tpool_width: {pool_width}", file=output)
+    log(f"\tdo_w: {do_w}", file=output)
+    log(f"\tdo_sigmoid: {do_sigmoid}", file=output)
+    model = ModelInteraction(
+        embedding_model,
+        contact_model,
+        use_cuda,
+        do_w=do_w,
+        pool_size=pool_width,
+        do_pool=do_pool,
+        do_sigmoid=do_sigmoid,
+    )
+    model.use_cuda = use_cuda
 
-        log(model, file=output)
+    log(model, file=output)
 
-    else:
+    if args.checkpoint is not None:
         log(
             f"Loading model from checkpoint {args.checkpoint}",
             file=output,
         )
-        model = torch.load(args.checkpoint)
-        model.use_cuda = use_cuda
+        state_dict = torch.load(args.checkpoint)
+        try:
+            model.load_state_dict(state_dict)
+        except RuntimeError:
+            log(
+                "Warning: Loading model with strict=False due to mismatch in state_dict keys",
+                file=output,
+            )
+            model.load_state_dict(state_dict, strict=False)
 
     if use_cuda:
         model.cuda()
@@ -913,9 +918,11 @@ def train_model(args, output):
 
     if save_prefix is not None:
         save_path = save_prefix + "_final.sav"
+        state_dict_path = save_prefix + "_final_state_dict.sav"
         log(f"Saving final model to {save_path}", file=output)
         model.cpu()
         torch.save(model, save_path)
+        torch.save(model.state_dict(), state_dict_path)
 
         if args.log_wandb:
             # Upload trained model as artifact
@@ -924,7 +931,7 @@ def train_model(args, output):
                 type="model",
                 description="D-SCRIPT trained interaction model",
             )
-            artifact.add_file(save_path)
+            artifact.add_file(state_dict_path)
             run.log_artifact(artifact)
             run.finish()
 
