@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import NamedTuple
 import h5py
 from pathlib import Path
@@ -14,17 +15,24 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+import wandb
 from sklearn.metrics import average_precision_score as average_precision
 from torch.autograd import Variable
 from tqdm import tqdm
 
 from .. import __version__
 from ..fasta import parse_dict
-from ..foldseek import fold_vocab, get_foldseek_onehot
+from ..foldseek import (
+    Foldseek3diContext,
+    build_backbone_vocab,
+    fold_vocab,
+    get_foldseek_onehot,
+)
 from ..glider import glide_compute_map, glider_score
 from ..models.contact import ContactCNN
 from ..models.embedding import FullyConnectedEmbed
-from ..models.interaction import ModelInteraction
+from ..models.interaction import InteractionInputs, ModelInteraction
+from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
 from ..utils import (
     PairedDataset,
     collate_paired_sequences,
@@ -219,6 +227,15 @@ def add_args(parser):
         "--checkpoint", help="checkpoint model to start training from"
     )
     misc_grp.add_argument("--seed", help="Set random seed", type=int)
+    misc_grp.add_argument(
+        "--log_wandb", action="store_true", help="Log metrics to Weights and Biases"
+    )
+    misc_grp.add_argument(
+        "--wandb-entity", default=None, help="Weights and Biases entity name"
+    )
+    misc_grp.add_argument(
+        "--wandb-project", default=None, help="Weights and Biases project name"
+    )
 
     ## Foldseek arguments
     foldseek_grp.add_argument(
@@ -231,9 +248,16 @@ def add_args(parser):
         "--foldseek_fasta",
         help="foldseek fasta file containing the foldseek representation",
     )
-    # foldseek_grp.add_argument(
-    #     "--add_foldseek_after_projection", default = False, action = "store_true", help = "If set to true, adds the fold seek embedding after the projection layer"
-    # )
+    foldseek_grp.add_argument(
+        "--allow_backbone3di",
+        default=False,
+        action="store_true",
+        help="If set to true, adds the 12 state one-hot representation",
+    )
+    foldseek_grp.add_argument(
+        "--backbone3di_fasta",
+        help="FASTA file containing the 12 state representation",
+    )
 
     return parser
 
@@ -245,10 +269,7 @@ def predict_cmap_interaction(
     tensors,
     use_cuda,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None,
     ###
 ):
     """
@@ -281,15 +302,27 @@ def predict_cmap_interaction(
         if use_cuda:
             z_a = z_a.cuda()
             z_b = z_b.cuda()
-        if allow_foldseek:
-            assert fold_record is not None and fold_vocab is not None
+
+        # foldseek and backbone vectors
+        f_a = f_b = b_a = b_b = None
+
+        # TODO: make better
+        if structural_context.allow_foldseek:
+            assert (
+                structural_context.fold_record is not None
+                and structural_context.fold_vocab is not None
+            )
             f_a = get_foldseek_onehot(
-                n0[i], z_a.shape[1], fold_record, fold_vocab
-            ).unsqueeze(
-                0
-            )  # seqlen x vocabsize
+                n0[i],
+                z_a.shape[1],
+                structural_context.fold_record,
+                structural_context.fold_vocab,
+            ).unsqueeze(0)  # seqlen x vocabsize
             f_b = get_foldseek_onehot(
-                n1[i], z_b.shape[1], fold_record, fold_vocab
+                n1[i],
+                z_b.shape[1],
+                structural_context.fold_record,
+                structural_context.fold_vocab,
             ).unsqueeze(0)
 
             ## check if cuda
@@ -297,14 +330,41 @@ def predict_cmap_interaction(
                 f_a = f_a.cuda()
                 f_b = f_b.cuda()
 
-            if add_first:
-                z_a = torch.concat([z_a, f_a], dim=2)
-                z_b = torch.concat([z_b, f_b], dim=2)
+        if structural_context.allow_backbone3di:
+            assert (
+                structural_context.backbone_record is not None
+                and structural_context.fold_vocab is not None
+            )
+            b_a = get_foldseek_onehot(
+                n0[i],
+                z_a.shape[1],
+                structural_context.backbone_record,
+                structural_context.backbone_vocab,
+            ).unsqueeze(0)  # seqlen x vocabsize
+            b_b = get_foldseek_onehot(
+                n1[i],
+                z_b.shape[1],
+                structural_context.backbone_record,
+                structural_context.backbone_vocab,
+            ).unsqueeze(0)
 
-        if allow_foldseek and (not add_first):
-            cm, ph = model.map_predict(z_a, z_b, True, f_a, f_b)
-        else:
-            cm, ph = model.map_predict(z_a, z_b)
+            ## check if cuda
+            if use_cuda:
+                b_a = b_a.cuda()
+                b_b = b_b.cuda()
+
+        cm, ph = model.map_predict(
+            InteractionInputs(
+                z_a,
+                z_b,
+                embed_foldseek=structural_context.allow_foldseek,
+                f0=f_a,
+                f1=f_b,
+                embed_backbone=structural_context.allow_backbone3di,
+                b0=b_a,
+                b1=b_b,
+            )
+        )
         p_hat.append(ph)
         c_map_mag.append(torch.mean(cm))
     p_hat = torch.stack(p_hat, 0)
@@ -312,6 +372,7 @@ def predict_cmap_interaction(
     return c_map_mag, p_hat
 
 
+# TODO: Remove methods??
 def predict_interaction(
     model,
     n0,
@@ -319,10 +380,7 @@ def predict_interaction(
     tensors,
     use_cuda,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None,
     ###
 ):
     """
@@ -340,15 +398,7 @@ def predict_interaction(
     :type use_cuda: bool
     """
     _, p_hat = predict_cmap_interaction(
-        model,
-        n0,
-        n1,
-        tensors,
-        use_cuda,
-        allow_foldseek,
-        fold_record,
-        fold_vocab,
-        add_first,
+        model, n0, n1, tensors, use_cuda, structural_context
     )
     return p_hat
 
@@ -366,10 +416,7 @@ def interaction_grad(
     glider_mat=None,
     use_cuda=True,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None,
     ###
 ):
     """
@@ -403,15 +450,7 @@ def interaction_grad(
     """
 
     c_map_mag, p_hat = predict_cmap_interaction(
-        model,
-        n0,
-        n1,
-        tensors,
-        use_cuda,
-        allow_foldseek,
-        fold_record,
-        fold_vocab,
-        add_first,
+        model, n0, n1, tensors, use_cuda, structural_context
     )
 
     if use_cuda:
@@ -471,10 +510,7 @@ def interaction_eval(
     tensors,
     use_cuda,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None,
     ###
 ):
     """
@@ -497,17 +533,7 @@ def interaction_eval(
 
     for n0, n1, y in test_iterator:
         p_hat.append(
-            predict_interaction(
-                model,
-                n0,
-                n1,
-                tensors,
-                use_cuda,
-                allow_foldseek,
-                fold_record,
-                fold_vocab,
-                add_first,
-            )
+            predict_interaction(model, n0, n1, tensors, use_cuda, structural_context)
         )
         true_y.append(y)
 
@@ -544,6 +570,16 @@ def interaction_eval(
 
 
 def train_model(args, output):
+    if args.log_wandb:
+        run = wandb.init(
+            # Set the wandb entity where your project will be logged (generally your team name).
+            entity=args.wandb_entity,
+            # Set the wandb project where this run will be logged.
+            project=args.wandb_project,
+            # Track hyperparameters and run metadata.
+            config=vars(args),
+        )
+
     # Create data sets
     batch_size = args.batch_size
     use_cuda = (args.device > -1) and torch.cuda.is_available()
@@ -568,18 +604,33 @@ def train_model(args, output):
     else:
         raise FileNotFoundError(f"Embedding path does not exist: {emb_path}")
 
-    ########## Foldseek code #########################3
+    ########## Foldseek code #########################
+
+    def load_records(enabled=False, fasta_path=""):
+        if not enabled:
+            return {}
+        assert fasta_path is not None
+        return parse_dict(fasta_path)
+
     allow_foldseek = args.allow_foldseek
-    fold_fasta_file = args.foldseek_fasta
-    # fold_vocab_file = args.foldseek_vocab
-    add_first = False
-    fold_record = {}
-    # fold_vocab = None
-    if allow_foldseek:
-        assert fold_fasta_file is not None
-        fold_fasta = parse_dict(fold_fasta_file)
-        for rec_k, rec_v in fold_fasta.items():
-            fold_record[rec_k] = rec_v
+    allow_backbone3di = args.allow_backbone3di
+
+    fold_record = load_records(allow_foldseek, args.foldseek_fasta)
+    backbone_record = load_records(allow_backbone3di, args.backbone3di_fasta)
+
+    backbone_vocab = build_backbone_vocab()
+
+    foldseek3dicontext = Foldseek3diContext(
+        # foldseek info
+        allow_foldseek=allow_foldseek,
+        fold_record=fold_record,
+        fold_vocab=fold_vocab,
+        # backbone info
+        allow_backbone3di=allow_backbone3di,
+        backbone_record=backbone_record,
+        backbone_vocab=backbone_vocab,
+    )
+
     ##################################################
 
     train_df = pd.read_csv(train_fi, sep="\t", header=None)
@@ -661,68 +712,68 @@ def train_model(args, output):
     else:
         glider_mat, glider_map = (None, None)
 
-    if args.checkpoint is None:
-        # Create embedding model
-        input_dim = args.input_dim
+    # Create embedding model
+    input_dim = args.input_dim
 
-        ############### foldseek code ###########################
+    projection_dim = args.projection_dim
 
-        if allow_foldseek and add_first:
-            input_dim += len(fold_vocab)
+    dropout_p = args.dropout_p
+    embedding_model = FullyConnectedEmbed(input_dim, projection_dim, dropout=dropout_p)
+    log("Initializing embedding model with:", file=output)
+    log(f"\tprojection_dim: {projection_dim}", file=output)
+    log(f"\tdropout_p: {dropout_p}", file=output)
 
-        ##########################################################
+    # Create contact model
+    hidden_dim = args.hidden_dim
+    kernel_width = args.kernel_width
+    log("Initializing contact model with:", file=output)
+    log(f"\thidden_dim: {hidden_dim}", file=output)
+    log(f"\tkernel_width: {kernel_width}", file=output)
 
-        projection_dim = args.projection_dim
+    proj_dim = projection_dim
+    if allow_foldseek:
+        proj_dim += len(fold_vocab)
+    if allow_backbone3di:
+        proj_dim += len(backbone_vocab)
+    contact_model = ContactCNN(proj_dim, hidden_dim, kernel_width)
 
-        dropout_p = args.dropout_p
-        embedding_model = FullyConnectedEmbed(
-            input_dim, projection_dim, dropout=dropout_p
-        )
-        log("Initializing embedding model with:", file=output)
-        log(f"\tprojection_dim: {projection_dim}", file=output)
-        log(f"\tdropout_p: {dropout_p}", file=output)
+    # Create the full model
+    do_w = not args.no_w
+    do_pool = args.do_pool
+    pool_width = args.pool_width
+    do_sigmoid = not args.no_sigmoid
+    log("Initializing interaction model with:", file=output)
+    log(f"\tdo_poool: {do_pool}", file=output)
+    log(f"\tpool_width: {pool_width}", file=output)
+    log(f"\tdo_w: {do_w}", file=output)
+    log(f"\tdo_sigmoid: {do_sigmoid}", file=output)
+    model = ModelInteraction(
+        embedding_model,
+        contact_model,
+        use_cuda,
+        do_w=do_w,
+        pool_size=pool_width,
+        do_pool=do_pool,
+        do_sigmoid=do_sigmoid,
+    )
+    model.use_cuda = use_cuda
 
-        # Create contact model
-        hidden_dim = args.hidden_dim
-        kernel_width = args.kernel_width
-        log("Initializing contact model with:", file=output)
-        log(f"\thidden_dim: {hidden_dim}", file=output)
-        log(f"\tkernel_width: {kernel_width}", file=output)
+    log(model, file=output)
 
-        proj_dim = projection_dim
-        if allow_foldseek and not add_first:
-            proj_dim += len(fold_vocab)
-        contact_model = ContactCNN(proj_dim, hidden_dim, kernel_width)
-
-        # Create the full model
-        do_w = not args.no_w
-        do_pool = args.do_pool
-        pool_width = args.pool_width
-        do_sigmoid = not args.no_sigmoid
-        log("Initializing interaction model with:", file=output)
-        log(f"\tdo_poool: {do_pool}", file=output)
-        log(f"\tpool_width: {pool_width}", file=output)
-        log(f"\tdo_w: {do_w}", file=output)
-        log(f"\tdo_sigmoid: {do_sigmoid}", file=output)
-        model = ModelInteraction(
-            embedding_model,
-            contact_model,
-            use_cuda,
-            do_w=do_w,
-            pool_size=pool_width,
-            do_pool=do_pool,
-            do_sigmoid=do_sigmoid,
-        )
-
-        log(model, file=output)
-
-    else:
+    if args.checkpoint is not None:
         log(
             f"Loading model from checkpoint {args.checkpoint}",
             file=output,
         )
-        model = torch.load(args.checkpoint)
-        model.use_cuda = use_cuda
+        state_dict = torch.load(args.checkpoint)
+        try:
+            model.load_state_dict(state_dict)
+        except RuntimeError:
+            log(
+                "Warning: Loading model with strict=False due to mismatch in state_dict keys",
+                file=output,
+            )
+            model.load_state_dict(state_dict, strict=False)
 
     if use_cuda:
         model.cuda()
@@ -774,10 +825,7 @@ def train_model(args, output):
                 glider_map=glider_map,
                 glider_mat=glider_mat,
                 use_cuda=use_cuda,
-                allow_foldseek=allow_foldseek,
-                fold_record=fold_record,
-                fold_vocab=fold_vocab,
-                add_first=add_first,
+                structural_context=foldseek3dicontext,
             )
 
             n += b
@@ -806,6 +854,16 @@ def train_model(args, output):
                     mse_accum,
                 ]
                 log(batch_report_fmt.format(*tokens), file=output)
+
+                if args.log_wandb:
+                    run.log(
+                        {
+                            "train/loss": loss_accum,
+                            "train/accuracy": acc_accum,
+                            "train/mse": mse_accum,
+                        }
+                    )
+
                 output.flush()
 
         model.eval()
@@ -820,14 +878,7 @@ def train_model(args, output):
                 inter_f1,
                 inter_aupr,
             ) = interaction_eval(
-                model,
-                test_iterator,
-                embeddings,
-                use_cuda,
-                allow_foldseek,
-                fold_record,
-                fold_vocab,
-                add_first,
+                model, test_iterator, embeddings, use_cuda, foldseek3dicontext
             )
             tokens = [
                 epoch + 1,
@@ -841,6 +892,20 @@ def train_model(args, output):
                 inter_aupr,
             ]
             log(epoch_report_fmt.format(*tokens), file=output)
+
+            if args.log_wandb:
+                run.log(
+                    {
+                        "val/loss": inter_loss,
+                        "val/accuracy": inter_correct / (len(test_iterator) * batch_size),
+                        "val/mse": inter_mse,
+                        "val/precision": inter_pr,
+                        "val/recall": inter_re,
+                        "val/f1": inter_f1,
+                        "val/aupr": inter_aupr,
+                    }
+                )
+
             output.flush()
 
             # Save the model
@@ -858,9 +923,23 @@ def train_model(args, output):
 
     if save_prefix is not None:
         save_path = save_prefix + "_final.sav"
+        state_dict_path = save_prefix + "_final_state_dict.sav"
         log(f"Saving final model to {save_path}", file=output)
         model.cpu()
         torch.save(model, save_path)
+        torch.save(model.state_dict(), state_dict_path)
+
+        if args.log_wandb:
+            # Upload trained model as artifact
+            artifact = wandb.Artifact(
+                name="trained-model",
+                type="model",
+                description="D-SCRIPT trained interaction model",
+            )
+            artifact.add_file(state_dict_path)
+            run.log_artifact(artifact)
+            run.finish()
+
         if use_cuda:
             model.cuda()
 

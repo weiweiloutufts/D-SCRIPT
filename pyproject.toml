@@ -99,3 +99,8 @@ python_files = "test_*.py"
 testpaths = [
     "dscript/tests",
 ]
+
+[dependency-groups]
+dev = [
+    "wandb>=0.23.1",
+]

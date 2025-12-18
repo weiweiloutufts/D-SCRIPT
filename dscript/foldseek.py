@@ -6,6 +6,19 @@ from loguru import logger
 
 from .utils import log
 
+from dataclasses import dataclass
+
+@dataclass
+class Foldseek3diContext:
+    allow_foldseek: bool = False
+    allow_backbone3di: bool = False
+
+    fold_record: dict = None
+    fold_vocab: dict = None
+
+    backbone_record: dict = None
+    backbone_vocab: dict = None
+
 fold_vocab = {
     "D": 0,
     "P": 1,
@@ -30,6 +43,31 @@ fold_vocab = {
     "X": 20,
 }
 
+def build_backbone_vocab(size=12):
+    """
+    Build a reduced amino-acid vocabulary mapping for backbone modeling.
+
+    This function selects the first `size` amino acids from a fixed alphabet
+    (`"ACDEFGHIKLMPQNRSTVWY"`) and returns a dictionary mapping each selected
+    amino acid to its corresponding value in `fold_vocab`. The backbone
+    sequence generation script uses "H" as invalid residue replacement.
+
+    :param size: Number of amino acids to include from the start of the
+                 alphabet. Must be between 1 and 20.
+    :type size: int, optional
+    :returns: A dictionary mapping each selected amino-acid letter in range to   
+              an index.
+    :rtype: dict
+    :raises ValueError: If `size` is less than 1 or greater than the number
+                        of amino acids in the alphabet (20).
+    """
+
+    aa_alphabet = "ACDEFGHIKLMNPQRSTVWY"
+    if size < 1 or size > len(aa_alphabet):
+        raise ValueError(f"Size must be between 1 and {len(aa_alphabet)}")
+    letters = aa_alphabet[:size]
+    vocab = {aa: i for i, aa in enumerate(letters)}
+    return vocab
 
 def get_foldseek_onehot(n0, size_n0, fold_record, fold_vocab):
     """
@@ -74,3 +112,4 @@ def get_3di_sequences(pdb_files: list[str]):
             log(f"Error processing {pdb_path}: {e}")
             continue
     return seq_records
+
