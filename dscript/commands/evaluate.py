@@ -10,7 +10,7 @@ import json
 import sys
 from collections.abc import Callable
 from typing import NamedTuple
-
+import torch.nn.functional as F
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,7 +21,13 @@ from sklearn.metrics import (
     precision_recall_curve,
     roc_auc_score,
     roc_curve,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    mean_squared_error,
 )
+import csv
 from tqdm import tqdm
 from pathlib import Path
 from dscript.loading import LoadingPool
@@ -172,6 +178,60 @@ def plot_eval_predictions(labels, predictions, path="figure"):
     plt.savefig(path + ".auroc.png")
     plt.close()
 
+
+def log_eval_metrics(
+    labels: np.ndarray,
+    phats: np.ndarray,
+    out_path_prefix: str,
+    threshold: float = 0.5,
+    split_name: str = "test",
+) -> None:
+    
+    labels = np.asarray(labels, dtype=np.float32).reshape(-1)
+    phats = np.asarray(phats, dtype=np.float32).reshape(-1)
+
+    n = int(labels.shape[0])
+
+    # Loss (BCE over probabilities)
+    if n == 0:
+        loss = float("nan")
+    else:
+        p = torch.from_numpy(phats).float().clamp(1e-7, 1 - 1e-7)
+        y = torch.from_numpy(labels).float()
+        loss = float(F.binary_cross_entropy(p, y, reduction="mean").item())
+
+    # Other metrics
+    if n == 0:
+        aupr = auroc = acc = prec = rec = f1 = mse = float("nan")
+    else:
+        y_true_int = labels.astype(int)
+        y_pred = (phats >= threshold).astype(int)
+
+        aupr = float(average_precision_score(y_true_int, phats))
+        auroc = float(roc_auc_score(y_true_int, phats)) if len(np.unique(y_true_int)) > 1 else float("nan")
+
+        acc = float(accuracy_score(y_true_int, y_pred))
+        prec = float(precision_score(y_true_int, y_pred, zero_division=0))
+        rec = float(recall_score(y_true_int, y_pred, zero_division=0))
+        f1 = float(f1_score(y_true_int, y_pred, zero_division=0))
+        mse = float(mean_squared_error(y_true_int, phats))
+
+    with open(out_path_prefix + "_metrics.txt", "w+") as f:
+        log(
+            f"[{split_name}] n: {n}\n"
+            f"[{split_name}] threshold: {threshold}\n"
+            f"[{split_name}] loss: {loss:.6f}\n"
+            f"[{split_name}] AUPR: {aupr:.6f}\n"
+            f"[{split_name}] AUROC: {auroc:.6f}\n"
+            f"[{split_name}] accuracy: {acc:.6f}\n"
+            f"[{split_name}] mse: {mse:.6f}\n"
+            f"[{split_name}] precision: {prec:.6f}\n"
+            f"[{split_name}] recall: {rec:.6f}\n"
+            f"[{split_name}] f1: {f1:.6f}",
+            file=f,
+        )
+
+
 def main(args):
     """
     Run model evaluation from arguments.
@@ -267,6 +327,8 @@ def main(args):
             for prot_name in tqdm(allProteins, desc="Loading HDF5 embeddings"):
                 embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
 
+    # Evaluate
+    
     model.eval()
     with torch.no_grad():
         phats = []
@@ -304,7 +366,6 @@ def main(args):
                     b_b = build_struct_embedding(n1, p1.shape[1], backbone_record, backbone_vocab)
 
                 interactionInputs = InteractionInputs(p0, p1, embed_foldseek=allow_foldseek, f0=f_a, f1=f_b, embed_backbone=allow_backbone, b0=b_a, b1=b_b)
-
                 _, pred = model.map_predict(interactionInputs)
                 pred = pred.item()
 
@@ -317,12 +378,13 @@ def main(args):
     phats = np.array(phats)
     labels = np.array(labels)
 
-    with open(outPath + "_metrics.txt", "w+") as f:
-        aupr = average_precision_score(labels, phats)
-        auroc = roc_auc_score(labels, phats)
-
-        log(f"AUPR: {aupr}", file=f)
-        log(f"AUROC: {auroc}", file=f)
+    log_eval_metrics(
+        labels=labels,
+        phats=phats,
+        out_path_prefix=outPath,
+        threshold=0.5,
+        split_name="test",
+    )
 
     plot_eval_predictions(labels, phats, outPath)
 
