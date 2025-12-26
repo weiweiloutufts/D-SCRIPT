@@ -295,13 +295,7 @@ def predict_cmap_interaction(
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
-        if model.training:
-            sigma = 0.02
-            scale_a = z_a.detach().std(dim=tuple(range(1, z_a.ndim)), keepdim=True).clamp_min(1e-6)
-            scale_b = z_b.detach().std(dim=tuple(range(1, z_b.ndim)), keepdim=True).clamp_min(1e-6)
-            z_a = z_a + torch.randn_like(z_a) * (sigma * scale_a)
-            z_b = z_b + torch.randn_like(z_b) * (sigma * scale_b)
-            
+
         # Ensure 3D [B, L, D]
         z_a = add_batch_dim_if_needed(z_a)
         z_b = add_batch_dim_if_needed(z_b)
@@ -376,7 +370,7 @@ def predict_cmap_interaction(
         c_map_mag.append(torch.mean(cm))
         # proto tensor
         cm_k = F.interpolate(
-            cm, size=(K_proto, K_proto),
+            cm.detach(), size=(K_proto, K_proto),
             mode="bilinear", align_corners=False
         )                                       # [1,1,K,K]
         c_map_tensor.append(cm_k.flatten())     # [K*K]
@@ -385,6 +379,8 @@ def predict_cmap_interaction(
     c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)        # [B]
     c_map_tensor = torch.stack(c_map_tensor, dim=0)           # [B, K*K]
     return c_map_mag, p_hat, c_map_tensor
+
+
 
 # TODO: Remove methods??
 def predict_interaction(
@@ -415,7 +411,7 @@ def predict_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     return p_hat
-def make_mixup_params(batch_size: int, alpha: float, device):
+def make_mixup_params(self, batch_size: int, alpha: float, device):
     """
     Returns:
       perm: [B] LongTensor, random permutation indices
@@ -432,17 +428,26 @@ def make_mixup_params(batch_size: int, alpha: float, device):
 
 import torch
 
-def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e-8):
-    z_n = z_mix / z_mix.norm(dim=1, keepdim=True).clamp_min(eps)
-    pos_n = pos_proto / pos_proto.norm().clamp_min(eps)
-    neg_n = neg_proto / neg_proto.norm().clamp_min(eps)
+def cosine_proto_pull(z_mix: torch.Tensor, y_mix: torch.Tensor,
+                      pos_proto: torch.Tensor, neg_proto: torch.Tensor,
+                      eps: float = 1e-8) -> torch.Tensor:
+    """
+    z_mix: [B,D] mixed proto vectors
+    y_mix: [B] soft labels in [0,1]
+    pos_proto/neg_proto: [D] prototype vectors
+    returns: scalar loss
+    """
+    # normalize
+    z_n = z_mix / (z_mix.norm(dim=1, keepdim=True) + eps)          # [B,D]
+    pos_n = pos_proto / (pos_proto.norm() + eps)                   # [D]
+    neg_n = neg_proto / (neg_proto.norm() + eps)                   # [D]
 
-    d_pos = 1.0 - (z_n * pos_n[None, :]).sum(dim=1)
-    d_neg = 1.0 - (z_n * neg_n[None, :]).sum(dim=1)
+    # cosine distance = 1 - cos
+    d_pos = 1.0 - (z_n * pos_n[None, :]).sum(dim=1)                # [B]
+    d_neg = 1.0 - (z_n * neg_n[None, :]).sum(dim=1)                # [B]
 
-    w = y_mix.clamp(0.0, 1.0)
-    return (w * d_pos + neg_weight * (1.0 - w) * d_neg).mean()
-
+    w = y_mix.clamp(0.0, 1.0)                                      # [B]
+    return (w * d_pos + (1.0 - w) * d_neg).mean()
 
 
 @torch.no_grad()
@@ -481,8 +486,7 @@ def interaction_grad(
     structural_context=None,
     # ---- prototype pull knobs
     proto_weight=0.1,
-    proto_ema=0.75,
-    proto_neg_weight=1
+    proto_ema=0.99,
 ):
     """
     Compute gradient and backpropagate loss for a batch.
@@ -522,15 +526,14 @@ def interaction_grad(
     if use_cuda:
         y = y.cuda()
     y = Variable(y).float().view(-1)
-    y_hard = y.detach().float().view(-1)
+    
     # --- make mixup params ONCE (use model method)
-    perm, lam = make_mixup_params(b, alpha=0.3, device=p_hat.device)
+    perm, lam = model.make_mixup_params(b, alpha=0.3, device=p_hat.device)
     lam = lam.float().view(-1)                                     # [B]
     perm = perm.long()
 
     # --- mix labels
     y_mix = lam * y + (1.0 - lam) * y[perm]                        # [B]] 
-    y_mix = y_mix.clamp(0.0, 1.0)
 
     # --- BCE (make sure shapes match)
     p_hat = p_hat.float().view(-1).clamp(1e-6, 1.0 - 1e-6)          # [B]
@@ -581,9 +584,7 @@ def interaction_grad(
             y_mix=y_mix,
             pos_proto=model.pos_proto_vec,
             neg_proto=model.neg_proto_vec,
-            neg_weight=proto_neg_weight,   
         )
-
 
     # --- total loss
     loss = (
@@ -595,10 +596,19 @@ def interaction_grad(
     # Backprop Loss
     loss.backward()
 
+    if use_cuda:
+        y = y.cpu()
+        p_hat = p_hat.cpu()
+        if run_tt:
+            g_score = g_score.cpu()
+
     with torch.no_grad():
-        p_guess = (p_hat.cpu() > 0.5).float()
-        correct = torch.sum(p_guess == y_hard.cpu()).item()
-        mse = torch.mean((y_hard.cpu() - p_hat.cpu()) ** 2).item()
+        guess_cutoff = 0.5
+        p_hat = p_hat.float()
+        p_guess = (guess_cutoff * torch.ones(b) < p_hat).float()
+        y = y.float()
+        correct = torch.sum(p_guess == y).item()
+        mse = torch.mean((y.float() - p_hat) ** 2).item()
 
     return loss, correct, mse, b
 
@@ -639,28 +649,26 @@ def interaction_eval(
     y = torch.cat(true_y, 0)
     p_hat = torch.cat(p_hat, 0)
 
-    device = p_hat.device
-    y = y.to(device)
+    if use_cuda:
+        y.cuda()
+        p_hat = torch.Tensor([x.cuda() for x in p_hat])
+        p_hat.cuda()
 
     loss = F.binary_cross_entropy(p_hat.float(), y.float()).item()
     b = len(y)
 
     with torch.no_grad():
-        p = p_hat.float().view(-1)
-        t = y.float().view(-1)
-        pred = (p > 0.5).float()
-        
-        correct = (pred == y).sum().item()
+        guess_cutoff = torch.Tensor([0.5]).float()
+        p_hat = p_hat.float()
+        y = y.float()
+        p_guess = (guess_cutoff * torch.ones(b) < p_hat).float()
+        correct = torch.sum(p_guess == y).item()
         mse = torch.mean((y.float() - p_hat) ** 2).item()
 
-        tp = torch.sum(pred * t).item()
-        fp = torch.sum(pred * (1 - t)).item()
-        fn = torch.sum((1 - pred) * t).item()
-
-        pr = tp / (tp + fp + 1e-8)
-        re = tp / (tp + fn + 1e-8)
-        f1 = 2 * pr * re / (pr + re + 1e-8)
-
+        tp = torch.sum(y * p_hat).item()
+        pr = tp / torch.sum(p_hat).item()
+        re = tp / torch.sum(y).item()
+        f1 = 2 * pr * re / (pr + re)
 
     y = y.cpu().numpy()
     p_hat = p_hat.data.cpu().numpy()

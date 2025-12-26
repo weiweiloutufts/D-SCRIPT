@@ -31,7 +31,7 @@ from ..foldseek import (
 from ..glider import glide_compute_map, glider_score
 from ..models.contact import ContactCNN
 from ..models.embedding import FullyConnectedEmbed
-from ..models.interaction import InteractionInputs, ModelInteraction
+from ..models.interaction_q import InteractionInputs, ModelInteraction
 from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
 from ..utils import (
     PairedDataset,
@@ -296,7 +296,7 @@ def predict_cmap_interaction(
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
         if model.training:
-            sigma = 0.02
+            sigma = 0.01
             scale_a = z_a.detach().std(dim=tuple(range(1, z_a.ndim)), keepdim=True).clamp_min(1e-6)
             scale_b = z_b.detach().std(dim=tuple(range(1, z_b.ndim)), keepdim=True).clamp_min(1e-6)
             z_a = z_a + torch.randn_like(z_a) * (sigma * scale_a)

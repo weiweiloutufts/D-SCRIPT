@@ -313,8 +313,9 @@ class ModelInteraction(nn.Module):
         mu = torch.mean(yhat)
         sigma = torch.var(yhat)
         # Q = torch.relu(yhat - mu)
-        Q = torch.relu(yhat - mu - (self.gamma * sigma))
-        phat = torch.sum(Q) / (torch.sum(torch.sign(Q)) + 1)
+        D = yhat - mu - (self.gamma * sigma)
+        Q = torch.sigmoid(D * 5)  # Soft mask: 1 for active, 0 for inactive
+        phat = torch.sum(Q * yhat_fused) / (torch.sum(Q) + 1e-6)
         if self.do_sigmoid:
             phat = self.activation(phat).squeeze()
         return C, phat
