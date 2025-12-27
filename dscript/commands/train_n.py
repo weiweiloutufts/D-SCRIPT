@@ -31,7 +31,7 @@ from ..foldseek import (
 from ..glider import glide_compute_map, glider_score
 from ..models.contact import ContactCNN
 from ..models.embedding import FullyConnectedEmbed
-from ..models.interaction_ex import InteractionInputs, ModelInteraction
+from ..models.interaction_n import InteractionInputs, ModelInteraction
 from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
 from ..utils import (
     PairedDataset,
@@ -287,20 +287,11 @@ def predict_cmap_interaction(
     b = len(n0)
 
     p_hat = []
-    c_map_mag = []
-    
-    c_map_tensor = []
-    K_proto = 32
+    aug_x_list = []
     
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
-        if model.training:
-            sigma = 0.1
-            scale_a = z_a.detach().std(dim=tuple(range(1, z_a.ndim)), keepdim=True).clamp_min(1e-6)
-            scale_b = z_b.detach().std(dim=tuple(range(1, z_b.ndim)), keepdim=True).clamp_min(1e-6)
-            z_a = z_a + torch.randn_like(z_a) * (sigma * scale_a)
-            z_b = z_b + torch.randn_like(z_b) * (sigma * scale_b)
             
         # Ensure 3D [B, L, D]
         z_a = add_batch_dim_if_needed(z_a)
@@ -360,7 +351,7 @@ def predict_cmap_interaction(
                 b_a = b_a.cuda()
                 b_b = b_b.cuda()
 
-        cm, ph = model.map_predict(
+        cm, ph, aug_x = model.map_predict(
             InteractionInputs(
                 z_a,
                 z_b,
@@ -374,17 +365,11 @@ def predict_cmap_interaction(
         )
         p_hat.append(ph)
         c_map_mag.append(torch.mean(cm))
-        # proto tensor
-        cm_k = F.interpolate(
-            cm, size=(K_proto, K_proto),
-            mode="bilinear", align_corners=False
-        )                                       # [1,1,K,K]
-        c_map_tensor.append(cm_k.flatten())     # [K*K]
-        
+        aug_x_list.append(aug_x.detach().cpu()) 
     p_hat = torch.stack(p_hat, 0).view(-1)                # [B]
     c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)        # [B]
-    c_map_tensor = torch.stack(c_map_tensor, dim=0)           # [B, K*K]
-    return c_map_mag, p_hat, c_map_tensor
+    all_aug_x = torch.cat(aug_x_list, dim=0) 
+    return c_map_mag, p_hat,all_aug_x
 
 # TODO: Remove methods??
 def predict_interaction(
@@ -411,7 +396,7 @@ def predict_interaction(
     :param use_cuda: Whether to use GPU
     :type use_cuda: bool
     """
-    _, p_hat, _ = predict_cmap_interaction(
+    _, p_hat, _= predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     return p_hat
@@ -515,7 +500,7 @@ def interaction_grad(
     :rtype: (torch.Tensor, int, torch.Tensor, int)
     """
 
-    c_map_mag, p_hat, c_map_tensor= predict_cmap_interaction(
+    c_map_mag, p_hat, z_mix = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     b = len(n0)
@@ -524,8 +509,10 @@ def interaction_grad(
         y = y.cuda()
     y = Variable(y).float().view(-1)
     y_hard = y.detach().float().view(-1)
-   # --- smooth labels
+    
+    # --- smooth labels
     y_mix = smooth_labels(y, smoothing=0.1)
+    
     # --- BCE (make sure shapes match)
     p_hat = p_hat.float().view(-1).clamp(1e-6, 1.0 - 1e-6)          # [B]
     bce_loss = F.binary_cross_entropy(p_hat, y_mix)                # scalar
@@ -553,15 +540,8 @@ def interaction_grad(
     # --- prototype pull on map vectors
     proto_pull_loss = torch.tensor(0.0, device=p_hat.device)
     if proto_weight > 0:
-        z = c_map_tensor.to(p_hat.device)                          # [B,D]
-        if z.dim() != 2 or z.shape[0] != b:
-            raise ValueError(f"Expected c_map_tensor as [B,D], got {tuple(z.shape)}")
-
-        # mix in proto space using SAME perm/lam
-        z_mix = lam[:, None] * z + (1.0 - lam)[:, None] * z[perm]  # [B,D]
-
         # lazy init prototype buffers
-        D = z.shape[1]
+        D = z_mix.shape[1]
         if not hasattr(model, "pos_proto_vec"):
             model.register_buffer("pos_proto_vec", torch.zeros(D, device=p_hat.device))
             model.register_buffer("neg_proto_vec", torch.zeros(D, device=p_hat.device))

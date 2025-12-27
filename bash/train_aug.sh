@@ -3,10 +3,10 @@
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --constraint="a100-80G"
-#SBATCH --mem=256G
-#SBATCH --time=24:00:00
-#SBATCH --output=logs/%A_bernett_train_no_aug_%a.out
-#SBATCH --error=logs/%A_bernett_train_no_aug_%a.err
+#SBATCH --mem=128G
+#SBATCH --time=48:00:00
+#SBATCH --output=logs/%A_bernett_train_noise%a.out
+#SBATCH --error=logs/%A_bernett_train_noise%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
@@ -41,7 +41,7 @@ EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_noise
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_noise0.1_0.99
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
 

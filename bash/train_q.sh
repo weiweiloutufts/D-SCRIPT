@@ -3,8 +3,8 @@
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --constraint="a100-80G"
-#SBATCH --mem=256G
-#SBATCH --time=24:00:00
+#SBATCH --mem=128G
+#SBATCH --time=48:00:00
 #SBATCH --output=logs/%A_bernett_train_no_aug_%a.out
 #SBATCH --error=logs/%A_bernett_train_no_aug_%a.err
 #SBATCH --mail-type=ALL

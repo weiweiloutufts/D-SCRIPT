@@ -296,7 +296,7 @@ def predict_cmap_interaction(
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
         if model.training:
-            sigma = 0.01
+            sigma = 0.1
             scale_a = z_a.detach().std(dim=tuple(range(1, z_a.ndim)), keepdim=True).clamp_min(1e-6)
             scale_b = z_b.detach().std(dim=tuple(range(1, z_b.ndim)), keepdim=True).clamp_min(1e-6)
             z_a = z_a + torch.randn_like(z_a) * (sigma * scale_a)
@@ -464,7 +464,8 @@ def ema_update_protos(model, z_mix: torch.Tensor, y_mix: torch.Tensor,
     if wn > min_mass:
         batch_neg = ((1.0 - w)[:, None] * z_mix).sum(dim=0) / wn   # [D]
         model.neg_proto_vec.mul_(ema).add_((1.0 - ema) * batch_neg)
-
+def smooth_labels(labels, smoothing=0.1):
+    return labels * (1 - smoothing) + 0.5 * smoothing
 def interaction_grad(
     model,
     n0,
@@ -481,7 +482,7 @@ def interaction_grad(
     structural_context=None,
     # ---- prototype pull knobs
     proto_weight=0.1,
-    proto_ema=0.75,
+    proto_ema=0.99,
     proto_neg_weight=1
 ):
     """
@@ -523,14 +524,8 @@ def interaction_grad(
         y = y.cuda()
     y = Variable(y).float().view(-1)
     y_hard = y.detach().float().view(-1)
-    # --- make mixup params ONCE (use model method)
-    perm, lam = make_mixup_params(b, alpha=0.3, device=p_hat.device)
-    lam = lam.float().view(-1)                                     # [B]
-    perm = perm.long()
-
-    # --- mix labels
-    y_mix = lam * y + (1.0 - lam) * y[perm]                        # [B]] 
-    y_mix = y_mix.clamp(0.0, 1.0)
+    # --- smooth labels
+    y_mix = smooth_labels(y, smoothing=0.1)
 
     # --- BCE (make sure shapes match)
     p_hat = p_hat.float().view(-1).clamp(1e-6, 1.0 - 1e-6)          # [B]
