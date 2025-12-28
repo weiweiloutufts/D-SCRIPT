@@ -97,7 +97,7 @@ class PairClassifier2D(nn.Module):
         )
      
 
-    def forward(self, yhat_fused):  # y: [B] (0/1) optional
+    def forward(self, yhat_fused):  
         x = self.feat(yhat_fused)   # [B,H,N,M]
 
         # global pooling -> fixed size regardless of N,M
@@ -107,7 +107,6 @@ class PairClassifier2D(nn.Module):
   
         # default: no augmentation
         x_aug = x
-        y_mix = None
         lam = None
         index = None
 
@@ -350,7 +349,7 @@ class ModelInteraction(nn.Module):
         yhat_cat = torch.cat([yhat, ga_map, gm_map], dim=1)         # [B,1+2k,N,M]
         yhat_fused = self.yhat_fuse(yhat_cat)                           # [B,1,N,M]
             
-        phat,z = self.clf(yhat_fused,self.training)  # [B]
+        phat,z = self.clf(yhat_fused)  # [B]
        
         return C, phat,z
 
@@ -378,7 +377,7 @@ class ModelInteraction(nn.Module):
         :return: Predicted probability of interaction
         :rtype: torch.Tensor, torch.Tensor
         """
-        _, phat = self.map_predict(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1, 
+        _, phat,_ = self.map_predict(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1, 
             embed_backbone=embed_backbone, b0=b0, b1=b1)
         return phat
 
