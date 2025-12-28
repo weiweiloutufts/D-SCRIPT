@@ -5,8 +5,8 @@
 #SBATCH --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
-#SBATCH --output=logs/%A_bernett_train_noise%a.out
-#SBATCH --error=logs/%A_bernett_train_noise%a.err
+#SBATCH --output=logs/%A_bernett_train_n%a.out
+#SBATCH --error=logs/%A_bernett_train_n%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 

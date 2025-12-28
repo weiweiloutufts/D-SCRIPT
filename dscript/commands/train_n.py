@@ -430,25 +430,48 @@ def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e
 
 
 
+import torch
+
 @torch.no_grad()
-def ema_update_protos(model, z_mix: torch.Tensor, y_mix: torch.Tensor,
-                      ema: float = 0.99, min_mass: float = 1e-3):
+def ema_update_protos(
+    model,
+    z_mix: torch.Tensor,
+    y_mix: torch.Tensor,
+    ema: float = 0.99,
+    min_mass: float = 1e-3,
+    eps: float = 1e-6,
+):
     """
     Updates model.pos_proto_vec and model.neg_proto_vec in-place.
-    z_mix: [B,D]
-    y_mix: [B]
+    z_mix: [B,D] on GPU/CPU
+    y_mix: [B] (float in [0,1]) possibly on different device
     """
-    w = y_mix.clamp(0.0, 1.0)                                      # [B]
-    wp = w.sum()
+    device = z_mix.device
+    dtype  = z_mix.dtype
+
+    # ensure weights on same device/dtype as z_mix
+    w = y_mix.to(device=device, dtype=dtype).clamp_(0.0, 1.0)   # [B]
+    wp = w.sum()                                                # scalar tensor on device
     wn = (1.0 - w).sum()
 
-    if wp > min_mass:
-        batch_pos = (w[:, None] * z_mix).sum(dim=0) / wp           # [D]
+    # ensure prototypes live on same device/dtype as z_mix
+    if model.pos_proto_vec.device != device or model.pos_proto_vec.dtype != dtype:
+        model.pos_proto_vec.data = model.pos_proto_vec.data.to(device=device, dtype=dtype)
+    if model.neg_proto_vec.device != device or model.neg_proto_vec.dtype != dtype:
+        model.neg_proto_vec.data = model.neg_proto_vec.data.to(device=device, dtype=dtype)
+
+    min_mass_t = torch.tensor(min_mass, device=device, dtype=dtype)
+
+    if wp > min_mass_t:
+        wp_safe = wp.clamp_min(eps)
+        batch_pos = (w[:, None] * z_mix).sum(dim=0) / wp_safe
         model.pos_proto_vec.mul_(ema).add_((1.0 - ema) * batch_pos)
 
-    if wn > min_mass:
-        batch_neg = ((1.0 - w)[:, None] * z_mix).sum(dim=0) / wn   # [D]
+    if wn > min_mass_t:
+        wn_safe = wn.clamp_min(eps)
+        batch_neg = ((1.0 - w)[:, None] * z_mix).sum(dim=0) / wn_safe
         model.neg_proto_vec.mul_(ema).add_((1.0 - ema) * batch_neg)
+
 def smooth_labels(labels, smoothing=0.1):
     return labels * (1 - smoothing) + 0.5 * smoothing
 def interaction_grad(
