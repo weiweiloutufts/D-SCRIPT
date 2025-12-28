@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=n
-#SBATCH -p gpu
-#SBATCH --gres=gpu:a100:1
-#SBATCH --constraint="a100-80G"
+#SBATCH -p batch
+# --gres=gpu:a100:1
+# --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%A_bernett_train_noise%a.out
@@ -95,7 +95,7 @@ python -m dscript.commands.train_n \
     ${EMBEDDING_DIM_FLAG} \
     ${TOPSY_TURVY} \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
-    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_noise" \
+    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_n" \
     --device "${DEVICE}" \
     --lr 0.0005 \
     --lambda 0.05 \

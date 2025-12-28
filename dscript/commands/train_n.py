@@ -288,7 +288,7 @@ def predict_cmap_interaction(
 
     p_hat = []
     aug_x_list = []
-    
+    c_map_mag = []
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
