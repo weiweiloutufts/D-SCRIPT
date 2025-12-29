@@ -7,6 +7,7 @@ from .embedding import FullyConnectedEmbed
 
 from dataclasses import dataclass
 
+
 @dataclass
 class InteractionInputs:
     z0: torch.Tensor
@@ -24,18 +25,30 @@ class InteractionInputs:
     def __post_init__(self):
         if self.embed_foldseek:
             assert self.f0 is not None and self.f1 is not None
-            assert isinstance(self.f0, torch.Tensor) and isinstance(self.f1, torch.Tensor)
-            assert (
-                self.z0.get_device() == self.f0.get_device() and self.z0.get_device() == self.f1.get_device()
+            assert isinstance(self.f0, torch.Tensor) and isinstance(
+                self.f1, torch.Tensor
             )
-            assert self.f0.shape[1] == self.z0.shape[1] and self.f1.shape[1] == self.z1.shape[1]
+            assert (
+                self.z0.get_device() == self.f0.get_device()
+                and self.z0.get_device() == self.f1.get_device()
+            )
+            assert (
+                self.f0.shape[1] == self.z0.shape[1]
+                and self.f1.shape[1] == self.z1.shape[1]
+            )
         if self.embed_backbone:
             assert self.b0 is not None and self.b1 is not None
-            assert isinstance(self.b0, torch.Tensor) and isinstance(self.b1, torch.Tensor)
-            assert (
-                self.z0.get_device() == self.b0.get_device() and self.z0.get_device() == self.b1.get_device()
+            assert isinstance(self.b0, torch.Tensor) and isinstance(
+                self.b1, torch.Tensor
             )
-            assert self.b0.shape[1] == self.z0.shape[1] and self.b1.shape[1] == self.z1.shape[1]
+            assert (
+                self.z0.get_device() == self.b0.get_device()
+                and self.z0.get_device() == self.b1.get_device()
+            )
+            assert (
+                self.b0.shape[1] == self.z0.shape[1]
+                and self.b1.shape[1] == self.z1.shape[1]
+            )
 
 
 class LogisticActivation(nn.Module):
@@ -93,29 +106,28 @@ class PairClassifier2D(nn.Module):
         self.head = nn.Sequential(
             nn.Linear(hidden * 2, hidden),
             nn.ReLU(),
-            nn.Linear(hidden, 1),   # logit
+            nn.Linear(hidden, 1),  # logit
         )
-     
 
-    def forward(self, yhat_fused):  
-        x = self.feat(yhat_fused)   # [B,H,N,M]
+    def forward(self, yhat_fused):
+        x = self.feat(yhat_fused)  # [B,H,N,M]
 
         # global pooling -> fixed size regardless of N,M
-        x_mean = x.mean(dim=(2, 3))           # [B,H]
-        x_max  = x.amax(dim=(2, 3))           # [B,H]
-        x = torch.cat([x_mean, x_max], dim=1) # [B,2H]
-  
+        x_mean = x.mean(dim=(2, 3))  # [B,H]
+        x_max = x.amax(dim=(2, 3))  # [B,H]
+        x = torch.cat([x_mean, x_max], dim=1)  # [B,2H]
+
         # default: no augmentation
         x_aug = x
         lam = None
         index = None
 
-        if self.training: 
+        if self.training:
             B = x.size(0)
-            lam = torch.empty(B, 1, device=x.device).uniform_(0.75, 0.95)  
-            index = torch.randperm(B, device=x.device)                      
+            lam = torch.empty(B, 1, device=x.device).uniform_(0.75, 0.95)
+            index = torch.randperm(B, device=x.device)
 
-            x_aug = lam * x + (1.0 - lam) * x[index]                   # [B,2H]
+            x_aug = lam * x + (1.0 - lam) * x[index]  # [B,2H]
 
         x_aug = self.dropout(x_aug)
         logit = self.head(x_aug).squeeze(1)  # [B]
@@ -189,12 +201,10 @@ class ModelInteraction(nn.Module):
         ## added aug
         k = 8
         ## need to adjust after set the dims of foldseek and backbone embedding
-        D = self.embedding.nout          # = 100
+        D = self.embedding.nout  # = 100
         self.g_proj = nn.Linear(D, k)
-        self.yhat_fuse = nn.Conv2d(1 + 2*k, 1, kernel_size=1, bias=True)
+        self.yhat_fuse = nn.Conv2d(1 + 2 * k, 1, kernel_size=1, bias=True)
         self.clf = PairClassifier2D(hidden=32, p_drop=0.2)
-
-        
 
     def clip(self):
         """
@@ -249,15 +259,15 @@ class ModelInteraction(nn.Module):
         B = self.contact.cmap(e0, e1)
         C = self.contact.predict(B)
         ###added augment
-        #print("e0 shape:", e0.shape)  
-        #print("e1 shape:", e1.shape)  
+        # print("e0 shape:", e0.shape)
+        # print("e1 shape:", e1.shape)
         p0 = e0.mean(dim=1)
         p1 = e1.mean(dim=1)
         int0 = p0 + p1
         int1 = p0 * p1
-        #print("int0, int1 shape:", int0.shape, int1.shape)
+        # print("int0, int1 shape:", int0.shape, int1.shape)
         ### added return int0, int1
-        return C , int0, int1
+        return C, int0, int1
 
     # TODO: Temporaru overload to allow downstream (post train/evaluate) methods to work.
     def _build_interaction_inputs(
@@ -283,7 +293,16 @@ class ModelInteraction(nn.Module):
         :return: Predicted contact map, predicted probability of interaction :math:`(b \\times N \\times d_0), (1)`
         :rtype: torch.Tensor, torch.Tensor
         """
-        return InteractionInputs(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1, embed_backbone=embed_backbone, b0=b0, b1=b1)
+        return InteractionInputs(
+            z0,
+            z1,
+            embed_foldseek=embed_foldseek,
+            f0=f0,
+            f1=f1,
+            embed_backbone=embed_backbone,
+            b0=b0,
+            b1=b1,
+        )
 
     def make_mixup_params(self, batch_size: int, alpha: float, device):
         perm = torch.randperm(batch_size, device=device)
@@ -292,10 +311,11 @@ class ModelInteraction(nn.Module):
         if alpha is None or alpha <= 0 or batch_size <= 1:
             lam = torch.ones(batch_size, device=device)
         else:
-            lam = torch.distributions.Beta(alpha, alpha).sample((batch_size,)).to(device)
+            lam = (
+                torch.distributions.Beta(alpha, alpha).sample((batch_size,)).to(device)
+            )
 
         return perm, lam
-
 
     def map_predict(self, *args, **kwargs):
         if len(args) == 1 and isinstance(args[0], InteractionInputs):
@@ -305,11 +325,11 @@ class ModelInteraction(nn.Module):
             cpredInputs = self._build_interaction_inputs(*args, **kwargs)
 
         C, g_add, g_mul = self.cpred(cpredInputs)
-        
+
         if self.training and not hasattr(self, "_printed_batch_B"):
             self._printed_batch_B = True
-            print("[DEBUG map_predict] C shape =", tuple(C.shape))  
-        
+            print("[DEBUG map_predict] C shape =", tuple(C.shape))
+
         # Ensure g_add/g_mul are [B,D]
         if g_add.ndim == 3:  # [B,1,D]
             g_add = g_add.squeeze(1)
@@ -336,24 +356,22 @@ class ModelInteraction(nn.Module):
 
         else:
             yhat = C
-            
+
         # ---- fuse global interaction into map (BEFORE pooling is usually better)
         B, _, N, M = yhat.shape
 
-        ga = self.g_proj(g_add)                     # [B,k]
-        gm = self.g_proj(g_mul)                     # [B,k]
+        ga = self.g_proj(g_add)  # [B,k]
+        gm = self.g_proj(g_mul)  # [B,k]
 
         ga_map = ga[:, :, None, None].expand(B, ga.shape[1], N, M)  # [B,k,N,M]
         gm_map = gm[:, :, None, None].expand(B, gm.shape[1], N, M)  # [B,k,N,M]
 
-        yhat_cat = torch.cat([yhat, ga_map, gm_map], dim=1)         # [B,1+2k,N,M]
-        yhat_fused = self.yhat_fuse(yhat_cat)                           # [B,1,N,M]
-            
-        phat,z = self.clf(yhat_fused)  # [B]
-       
-        return C, phat,z
+        yhat_cat = torch.cat([yhat, ga_map, gm_map], dim=1)  # [B,1+2k,N,M]
+        yhat_fused = self.yhat_fuse(yhat_cat)  # [B,1,N,M]
 
+        phat, z = self.clf(yhat_fused)  # [B]
 
+        return C, phat, z
 
     # INTERNAL
     def predict(
@@ -377,17 +395,42 @@ class ModelInteraction(nn.Module):
         :return: Predicted probability of interaction
         :rtype: torch.Tensor, torch.Tensor
         """
-        _, phat,_ = self.map_predict(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1, 
-            embed_backbone=embed_backbone, b0=b0, b1=b1)
+        _, phat, _ = self.map_predict(
+            z0,
+            z1,
+            embed_foldseek=embed_foldseek,
+            f0=f0,
+            f1=f1,
+            embed_backbone=embed_backbone,
+            b0=b0,
+            b1=b1,
+        )
         return phat
 
-    def forward(self, z0, z1, embed_foldseek=False, f0=None, f1=None,
-                    embed_backbone=False, b0=None, b1=None):
+    def forward(
+        self,
+        z0,
+        z1,
+        embed_foldseek=False,
+        f0=None,
+        f1=None,
+        embed_backbone=False,
+        b0=None,
+        b1=None,
+    ):
         """
         :meta private:
         """
-        return self.predict(z0, z1, embed_foldseek=embed_foldseek, f0=f0, f1=f1,
-            embed_backbone=embed_backbone, b0=b0, b1=b1)
+        return self.predict(
+            z0,
+            z1,
+            embed_foldseek=embed_foldseek,
+            f0=f0,
+            f1=f1,
+            embed_backbone=embed_backbone,
+            b0=b0,
+            b1=b1,
+        )
 
 
 class DSCRIPTModel(ModelInteraction, PyTorchModelHubMixin):
@@ -423,6 +466,4 @@ class DSCRIPTModel(ModelInteraction, PyTorchModelHubMixin):
             theta_init=theta_init,
             lambda_init=lambda_init,
             gamma_init=gamma_init,
-            
         )
-

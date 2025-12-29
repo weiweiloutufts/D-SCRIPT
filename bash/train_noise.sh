@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=aug
-#SBATCH -p gpu
-#SBATCH --gres=gpu:a100:1
-#SBATCH --constraint="a100-80G"
+#SBATCH --job-name=noise
+#SBATCH -p batch
+# --gres=gpu:a100:1
+#--constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
-#SBATCH --output=logs/%A_bernett_train_aug%a.out
-#SBATCH --error=logs/%A_bernett_train_aug%a.err
+#SBATCH --output=logs/%A_bernett_train_noise%a.out
+#SBATCH --error=logs/%A_bernett_train_noise%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
@@ -79,9 +79,14 @@ done
 EMBEDDING_FLAG="--embedding ${EMBEDDING}"
 EMBEDDING_DIM_FLAG="--input-dim ${EMBEDDING_DIM}"
 
+BACKBONE_CMD=""
+if [ -n "$BACKBONE" ]; then
+    BACKBONE_CMD="--allow_backbone3di --backbone3di_fasta ${FOLDSEEK_FASTA}"
+fi
+
 FOLDSEEK_CMD=""
 if [ -n "$FOLDSEEK" ]; then
-    FOLDSEEK_CMD="--allow_foldseek --foldseek_fasta ${FOLDSEEK_FASTA} --add_foldseek_after_projection"
+    FOLDSEEK_CMD="--allow_foldseek --foldseek_fasta ${FOLDSEEK_FASTA}" # --add_foldseek_after_projection"
 fi
 
 if [ ! -d "${OUTPUT_FOLDER}" ]; then
@@ -107,4 +112,8 @@ python -m dscript.commands.train_noise \
     --dropout-p 0.2 \
     --projection-dim 100 \
     --hidden-dim 50 \
-    ${FOLDSEEK_CMD}
+    ${BACKBONE_CMD} \
+    ${FOLDSEEK_CMD} \
+    --log_wandb \
+    --wandb-entity bergerlab-mit \
+    --wandb-project tt3d_backbone 

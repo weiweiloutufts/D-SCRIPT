@@ -186,7 +186,7 @@ def log_eval_metrics(
     threshold: float = 0.5,
     split_name: str = "test",
 ) -> None:
-    
+
     labels = np.asarray(labels, dtype=np.float32).reshape(-1)
     phats = np.asarray(phats, dtype=np.float32).reshape(-1)
 
@@ -208,7 +208,11 @@ def log_eval_metrics(
         y_pred = (phats >= threshold).astype(int)
 
         aupr = float(average_precision_score(y_true_int, phats))
-        auroc = float(roc_auc_score(y_true_int, phats)) if len(np.unique(y_true_int)) > 1 else float("nan")
+        auroc = (
+            float(roc_auc_score(y_true_int, phats))
+            if len(np.unique(y_true_int)) > 1
+            else float("nan")
+        )
 
         acc = float(accuracy_score(y_true_int, y_pred))
         prec = float(precision_score(y_true_int, y_pred, zero_division=0))
@@ -328,7 +332,7 @@ def main(args):
                 embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
 
     # Evaluate
-    
+
     model.eval()
     with torch.no_grad():
         phats = []
@@ -358,14 +362,31 @@ def main(args):
                     return e
 
                 if allow_foldseek:
-                    f_a = build_struct_embedding(n0, p0.shape[1], fold_record, fold_vocab)
-                    f_b = build_struct_embedding(n1, p1.shape[1], fold_record, fold_vocab)
+                    f_a = build_struct_embedding(
+                        n0, p0.shape[1], fold_record, fold_vocab
+                    )
+                    f_b = build_struct_embedding(
+                        n1, p1.shape[1], fold_record, fold_vocab
+                    )
 
                 if allow_backbone:
-                    b_a = build_struct_embedding(n0, p0.shape[1], backbone_record, backbone_vocab)
-                    b_b = build_struct_embedding(n1, p1.shape[1], backbone_record, backbone_vocab)
+                    b_a = build_struct_embedding(
+                        n0, p0.shape[1], backbone_record, backbone_vocab
+                    )
+                    b_b = build_struct_embedding(
+                        n1, p1.shape[1], backbone_record, backbone_vocab
+                    )
 
-                interactionInputs = InteractionInputs(p0, p1, embed_foldseek=allow_foldseek, f0=f_a, f1=f_b, embed_backbone=allow_backbone, b0=b_a, b1=b_b)
+                interactionInputs = InteractionInputs(
+                    p0,
+                    p1,
+                    embed_foldseek=allow_foldseek,
+                    f0=f_a,
+                    f1=f_b,
+                    embed_backbone=allow_backbone,
+                    b0=b_a,
+                    b1=b_b,
+                )
                 _, pred, _ = model.map_predict(interactionInputs)
                 pred = pred.item()
 
@@ -395,4 +416,3 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     add_args(parser)
     main(parser.parse_args())
-

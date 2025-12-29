@@ -222,7 +222,9 @@ def add_args(parser):
     misc_grp.add_argument(
         "-d", "--device", type=int, default=-1, help="compute device to use"
     )
-    misc_grp.add_argument("--checkpoint", help="checkpoint model to start training from")
+    misc_grp.add_argument(
+        "--checkpoint", help="checkpoint model to start training from"
+    )
     misc_grp.add_argument("--seed", help="Set random seed", type=int)
     misc_grp.add_argument(
         "--log_wandb", action="store_true", help="Log metrics to Weights and Biases"
@@ -292,7 +294,7 @@ def predict_cmap_interaction(
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
-            
+
         # Ensure 3D [B, L, D]
         z_a = add_batch_dim_if_needed(z_a)
         z_b = add_batch_dim_if_needed(z_b)
@@ -315,7 +317,9 @@ def predict_cmap_interaction(
                 z_a.shape[1],
                 structural_context.fold_record,
                 structural_context.fold_vocab,
-            ).unsqueeze(0)  # seqlen x vocabsize
+            ).unsqueeze(
+                0
+            )  # seqlen x vocabsize
             f_b = get_foldseek_onehot(
                 n1[i],
                 z_b.shape[1],
@@ -338,7 +342,9 @@ def predict_cmap_interaction(
                 z_a.shape[1],
                 structural_context.backbone_record,
                 structural_context.backbone_vocab,
-            ).unsqueeze(0)  # seqlen x vocabsize
+            ).unsqueeze(
+                0
+            )  # seqlen x vocabsize
             b_b = get_foldseek_onehot(
                 n1[i],
                 z_b.shape[1],
@@ -365,11 +371,12 @@ def predict_cmap_interaction(
         )
         p_hat.append(ph)
         c_map_mag.append(torch.mean(cm))
-        aug_x_list.append(aug_x.detach().cpu()) 
-    p_hat = torch.stack(p_hat, 0).view(-1)                # [B]
-    c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)        # [B]
-    all_aug_x = torch.cat(aug_x_list, dim=0) 
-    return c_map_mag, p_hat,all_aug_x
+        aug_x_list.append(aug_x.detach().cpu())
+    p_hat = torch.stack(p_hat, 0).view(-1)  # [B]
+    c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)  # [B]
+    all_aug_x = torch.cat(aug_x_list, dim=0)
+    return c_map_mag, p_hat, all_aug_x
+
 
 # TODO: Remove methods??
 def predict_interaction(
@@ -396,10 +403,12 @@ def predict_interaction(
     :param use_cuda: Whether to use GPU
     :type use_cuda: bool
     """
-    _, p_hat, _= predict_cmap_interaction(
+    _, p_hat, _ = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     return p_hat
+
+
 def make_mixup_params(batch_size: int, alpha: float, device):
     """
     Returns:
@@ -415,12 +424,16 @@ def make_mixup_params(batch_size: int, alpha: float, device):
 
     return perm, lam
 
+
 import torch
 
+import torch.nn.functional as F
+
+
 def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e-8):
-    z_n = z_mix / z_mix.norm(dim=1, keepdim=True).clamp_min(eps)
-    pos_n = pos_proto / pos_proto.norm().clamp_min(eps)
-    neg_n = neg_proto / neg_proto.norm().clamp_min(eps)
+    z_n = F.normalize(z_mix, p=2, dim=1, eps=eps)
+    pos_n = F.normalize(pos_proto, p=2, dim=0, eps=eps)
+    neg_n = F.normalize(neg_proto, p=2, dim=0, eps=eps)
 
     d_pos = 1.0 - (z_n * pos_n[None, :]).sum(dim=1)
     d_neg = 1.0 - (z_n * neg_n[None, :]).sum(dim=1)
@@ -429,8 +442,8 @@ def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e
     return (w * d_pos + neg_weight * (1.0 - w) * d_neg).mean()
 
 
-
 import torch
+
 
 @torch.no_grad()
 def ema_update_protos(
@@ -441,39 +454,38 @@ def ema_update_protos(
     min_mass: float = 1e-3,
     eps: float = 1e-6,
 ):
-    """
-    Updates model.pos_proto_vec and model.neg_proto_vec in-place.
-    z_mix: [B,D] on GPU/CPU
-    y_mix: [B] (float in [0,1]) possibly on different device
-    """
     device = z_mix.device
-    dtype  = z_mix.dtype
+    dtype = z_mix.dtype
 
-    # ensure weights on same device/dtype as z_mix
-    w = y_mix.to(device=device, dtype=dtype).clamp_(0.0, 1.0)   # [B]
-    wp = w.sum()                                                # scalar tensor on device
+    # NEVER modify y_mix in-place
+    w = y_mix.to(device=device, dtype=dtype).clamp(0.0, 1.0)  # no clamp_
+
+    wp = w.sum()
     wn = (1.0 - w).sum()
 
-    # ensure prototypes live on same device/dtype as z_mix
-    if model.pos_proto_vec.device != device or model.pos_proto_vec.dtype != dtype:
-        model.pos_proto_vec.data = model.pos_proto_vec.data.to(device=device, dtype=dtype)
-    if model.neg_proto_vec.device != device or model.neg_proto_vec.dtype != dtype:
-        model.neg_proto_vec.data = model.neg_proto_vec.data.to(device=device, dtype=dtype)
-
     min_mass_t = torch.tensor(min_mass, device=device, dtype=dtype)
+
+    # ensure prototypes exist and are on the right device/dtype WITHOUT .data
+    if model.pos_proto_vec.device != device or model.pos_proto_vec.dtype != dtype:
+        model.pos_proto_vec = model.pos_proto_vec.to(device=device, dtype=dtype)
+    if model.neg_proto_vec.device != device or model.neg_proto_vec.dtype != dtype:
+        model.neg_proto_vec = model.neg_proto_vec.to(device=device, dtype=dtype)
 
     if wp > min_mass_t:
         wp_safe = wp.clamp_min(eps)
         batch_pos = (w[:, None] * z_mix).sum(dim=0) / wp_safe
-        model.pos_proto_vec.mul_(ema).add_((1.0 - ema) * batch_pos)
+        model.pos_proto_vec.mul_(ema).add_(batch_pos, alpha=(1.0 - ema))
 
     if wn > min_mass_t:
         wn_safe = wn.clamp_min(eps)
         batch_neg = ((1.0 - w)[:, None] * z_mix).sum(dim=0) / wn_safe
-        model.neg_proto_vec.mul_(ema).add_((1.0 - ema) * batch_neg)
+        model.neg_proto_vec.mul_(ema).add_(batch_neg, alpha=(1.0 - ema))
+
 
 def smooth_labels(labels, smoothing=0.1):
     return labels * (1 - smoothing) + 0.5 * smoothing
+
+
 def interaction_grad(
     model,
     n0,
@@ -491,7 +503,7 @@ def interaction_grad(
     # ---- prototype pull knobs
     proto_weight=0.1,
     proto_ema=0.99,
-    proto_neg_weight=1
+    proto_neg_weight=1,
 ):
     """
     Compute gradient and backpropagate loss for a batch.
@@ -527,18 +539,18 @@ def interaction_grad(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     b = len(n0)
-   
+
     if use_cuda:
         y = y.cuda()
     y = Variable(y).float().view(-1)
     y_hard = y.detach().float().view(-1)
-    
+
     # --- smooth labels
     y_mix = smooth_labels(y, smoothing=0.1)
-    
+
     # --- BCE (make sure shapes match)
-    p_hat = p_hat.float().view(-1).clamp(1e-6, 1.0 - 1e-6)          # [B]
-    bce_loss = F.binary_cross_entropy(p_hat, y_mix)                # scalar
+    p_hat = p_hat.float().view(-1).clamp(1e-6, 1.0 - 1e-6)  # [B]
+    bce_loss = F.binary_cross_entropy(p_hat, y_mix)  # scalar
 
     if run_tt:
         g_score = []
@@ -559,7 +571,7 @@ def interaction_grad(
         accuracy_loss = bce_loss
 
     representation_loss = torch.mean(c_map_mag)
-    
+
     # --- prototype pull on map vectors
     proto_pull_loss = torch.tensor(0.0, device=p_hat.device)
     if proto_weight > 0:
@@ -569,18 +581,14 @@ def interaction_grad(
             model.register_buffer("pos_proto_vec", torch.zeros(D, device=p_hat.device))
             model.register_buffer("neg_proto_vec", torch.zeros(D, device=p_hat.device))
 
-        # EMA update (no grad)
-        ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
-
         # cosine pull loss
         proto_pull_loss = cosine_proto_pull(
             z_mix=z_mix,
             y_mix=y_mix,
             pos_proto=model.pos_proto_vec,
             neg_proto=model.neg_proto_vec,
-            neg_weight=proto_neg_weight,   
+            neg_weight=proto_neg_weight,
         )
-
 
     # --- total loss
     loss = (
@@ -591,6 +599,9 @@ def interaction_grad(
 
     # Backprop Loss
     loss.backward()
+
+    # EMA update (no grad)
+    ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
 
     with torch.no_grad():
         p_guess = (p_hat.cpu() > 0.5).float()
@@ -646,7 +657,7 @@ def interaction_eval(
         p = p_hat.float().view(-1)
         t = y.float().view(-1)
         pred = (p > 0.5).float()
-        
+
         correct = (pred == y).sum().item()
         mse = torch.mean((y.float() - p_hat) ** 2).item()
 
@@ -657,7 +668,6 @@ def interaction_eval(
         pr = tp / (tp + fp + 1e-8)
         re = tp / (tp + fn + 1e-8)
         f1 = 2 * pr * re / (pr + re + 1e-8)
-
 
     y = y.cpu().numpy()
     p_hat = p_hat.data.cpu().numpy()
@@ -739,12 +749,12 @@ def train_model(args, output):
         train_p2 = train_df["prot2"]
         train_y = torch.from_numpy(train_df["label"].values)
     else:
-        train_p1 = pd.concat((train_df["prot1"], train_df["prot2"]), axis=0).reset_index(
-            drop=True
-        )
-        train_p2 = pd.concat((train_df["prot2"], train_df["prot1"]), axis=0).reset_index(
-            drop=True
-        )
+        train_p1 = pd.concat(
+            (train_df["prot1"], train_df["prot2"]), axis=0
+        ).reset_index(drop=True)
+        train_p2 = pd.concat(
+            (train_df["prot2"], train_df["prot1"]), axis=0
+        ).reset_index(drop=True)
         train_y = torch.from_numpy(
             pd.concat((train_df["label"], train_df["label"])).values
         )
@@ -995,7 +1005,8 @@ def train_model(args, output):
                 run.log(
                     {
                         "val/loss": inter_loss,
-                        "val/accuracy": inter_correct / (len(test_iterator) * batch_size),
+                        "val/accuracy": inter_correct
+                        / (len(test_iterator) * batch_size),
                         "val/mse": inter_mse,
                         "val/precision": inter_pr,
                         "val/recall": inter_re,
@@ -1008,7 +1019,9 @@ def train_model(args, output):
 
             # Save the model
             if save_prefix is not None:
-                save_path = save_prefix + "_epoch" + str(epoch + 1).zfill(digits) + ".sav"
+                save_path = (
+                    save_prefix + "_epoch" + str(epoch + 1).zfill(digits) + ".sav"
+                )
                 log(f"Saving model to {save_path}", file=output)
                 model.cpu()
                 torch.save(model, save_path)

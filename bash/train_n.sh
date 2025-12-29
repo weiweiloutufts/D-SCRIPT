@@ -41,7 +41,7 @@ EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_n
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_nb
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
 
@@ -79,9 +79,14 @@ done
 EMBEDDING_FLAG="--embedding ${EMBEDDING}"
 EMBEDDING_DIM_FLAG="--input-dim ${EMBEDDING_DIM}"
 
+BACKBONE_CMD=""
+if [ -n "$BACKBONE" ]; then
+    BACKBONE_CMD="--allow_backbone3di --backbone3di_fasta ${FOLDSEEK_FASTA}"
+fi
+
 FOLDSEEK_CMD=""
 if [ -n "$FOLDSEEK" ]; then
-    FOLDSEEK_CMD="--allow_foldseek --foldseek_fasta ${FOLDSEEK_FASTA} --add_foldseek_after_projection"
+    FOLDSEEK_CMD="--allow_foldseek --foldseek_fasta ${FOLDSEEK_FASTA}" # --add_foldseek_after_projection"
 fi
 
 if [ ! -d "${OUTPUT_FOLDER}" ]; then
@@ -107,4 +112,6 @@ python -m dscript.commands.train_n \
     --dropout-p 0.2 \
     --projection-dim 100 \
     --hidden-dim 50 \
-    ${FOLDSEEK_CMD}
+    ${BACKBONE_CMD} \
+    ${FOLDSEEK_CMD} \
+  
