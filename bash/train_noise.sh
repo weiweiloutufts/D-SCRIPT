@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=noise
-#SBATCH -p batch
-# --gres=gpu:a100:1
-#--constraint="a100-80G"
+#SBATCH -p gpu
+#SBATCH --gres=gpu:a100:1
+#SBATCH --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%A_bernett_train_noise%a.out
@@ -41,7 +41,7 @@ EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_noise0.1_0.99
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_noise
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
 
@@ -114,6 +114,6 @@ python -m dscript.commands.train_noise \
     --hidden-dim 50 \
     ${BACKBONE_CMD} \
     ${FOLDSEEK_CMD} \
-    --log_wandb \
-    --wandb-entity bergerlab-mit \
-    --wandb-project tt3d_backbone 
+    #--log_wandb \
+    #--wandb-entity bergerlab-mit \
+    #--wandb-project tt3d_backbone 
