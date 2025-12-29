@@ -447,11 +447,6 @@ def make_mixup_params(batch_size: int, alpha: float, device):
     return perm, lam
 
 
-import torch
-
-import torch.nn.functional as F
-
-
 def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e-8):
     z_n = F.normalize(z_mix, p=2, dim=1, eps=eps)
     pos_n = F.normalize(pos_proto, p=2, dim=0, eps=eps)
@@ -563,6 +558,12 @@ def interaction_grad(
         y = y.cuda()
     y = Variable(y).float().view(-1)
     y_hard = y.detach().float().view(-1)
+
+    # --- make mixup params ONCE (use model method)
+    perm, lam = model.make_mixup_params(b, alpha=0.3, device=p_hat.device)
+    lam = lam.float().view(-1)  # [B]
+    perm = perm.long()
+
     # --- smooth labels
     y_mix = smooth_labels(y, smoothing=0.1)
 
@@ -606,8 +607,7 @@ def interaction_grad(
             model.register_buffer("pos_proto_vec", torch.zeros(D, device=p_hat.device))
             model.register_buffer("neg_proto_vec", torch.zeros(D, device=p_hat.device))
 
-        # EMA update (no grad)
-        ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
+        
 
         # cosine pull loss
         proto_pull_loss = cosine_proto_pull(
@@ -627,6 +627,9 @@ def interaction_grad(
 
     # Backprop Loss
     loss.backward()
+    
+    # EMA update (no grad)
+    ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
 
     with torch.no_grad():
         p_guess = (p_hat.cpu() > 0.5).float()

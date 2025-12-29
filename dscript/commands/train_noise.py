@@ -447,11 +447,6 @@ def make_mixup_params(batch_size: int, alpha: float, device):
     return perm, lam
 
 
-import torch.nn.functional as F
-
-import torch.nn.functional as F
-
-
 def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e-8):
     z_n = F.normalize(z_mix, p=2, dim=1, eps=eps)
     pos_n = F.normalize(pos_proto, p=2, dim=0, eps=eps)

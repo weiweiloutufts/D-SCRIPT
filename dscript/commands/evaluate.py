@@ -221,17 +221,14 @@ def log_eval_metrics(
         mse = float(mean_squared_error(y_true_int, phats))
 
     with open(out_path_prefix + "_metrics.txt", "w+") as f:
+
         log(
-            f"[{split_name}] n: {n}\n"
-            f"[{split_name}] threshold: {threshold}\n"
-            f"[{split_name}] loss: {loss:.6f}\n"
-            f"[{split_name}] AUPR: {aupr:.6f}\n"
-            f"[{split_name}] AUROC: {auroc:.6f}\n"
-            f"[{split_name}] accuracy: {acc:.6f}\n"
-            f"[{split_name}] mse: {mse:.6f}\n"
-            f"[{split_name}] precision: {prec:.6f}\n"
-            f"[{split_name}] recall: {rec:.6f}\n"
-            f"[{split_name}] f1: {f1:.6f}",
+            "split,n,threshold,loss,aupr,auroc,accuracy,mse,precision,recall,f1",
+            file=f,
+        )
+        log(
+            f"{split_name},{n},{threshold:.6f},{loss:.6f},{aupr:.6f},"
+            f"{auroc:.6f},{acc:.6f},{mse:.6f},{prec:.6f},{rec:.6f},{f1:.6f}",
             file=f,
         )
 
