@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=ex
+#SBATCH --job-name=ns
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 # --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
-#SBATCH --output=logs/%A_bernett_train_ex_%a.out
-#SBATCH --error=logs/%A_bernett_train_ex_%a.err
+#SBATCH --output=logs/%A_bernett_train_ns%a.out
+#SBATCH --error=logs/%A_bernett_train_ns%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
@@ -41,7 +41,7 @@ EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_ex
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_ns
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
 
@@ -93,14 +93,14 @@ if [ ! -d "${OUTPUT_FOLDER}" ]; then
     mkdir -p "${OUTPUT_FOLDER}"
 fi
 
-python -m dscript.commands.train_ex \
+python -m dscript.commands.train_ns \
     --train "${TRAIN}" \
     --test "${TEST}" \
     ${EMBEDDING_FLAG} \
     ${EMBEDDING_DIM_FLAG} \
     ${TOPSY_TURVY} \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
-    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_ex" \
+    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_n" \
     --device "${DEVICE}" \
     --lr 0.0005 \
     --lambda 0.05 \
@@ -114,6 +114,4 @@ python -m dscript.commands.train_ex \
     --hidden-dim 50 \
     ${BACKBONE_CMD} \
     ${FOLDSEEK_CMD} \
-    #--log_wandb \
-    #--wandb-entity bergerlab-mit \
-    #--wandb-project tt3d_backbone 
+  

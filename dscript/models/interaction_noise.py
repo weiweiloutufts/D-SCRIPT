@@ -330,8 +330,8 @@ class ModelInteraction(nn.Module):
             yhat_fused = self.maxPool(yhat_fused)
 
         # Mean of contact predictions where p_ij > mu + gamma*sigma
-        mu = torch.mean(yhat)
-        sigma = torch.var(yhat)
+        mu = yhat.mean(dim=(1,2,3), keepdim=True)                    # [B,1,1,1]
+        sigma = yhat.var(dim=(1,2,3), keepdim=True, unbiased=False).clamp_min(1e-6)
         # Q = torch.relu(yhat - mu)
         Q = torch.relu(yhat - mu - (self.gamma * sigma))
         phat = torch.sum(Q) / (torch.sum(torch.sign(Q)) + 1)

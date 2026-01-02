@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=q
+#SBATCH --job-name=q2
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
-#SBATCH --constraint="a100-80G"
+# --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%A_bernett_train_q_%a.out
@@ -41,7 +41,7 @@ EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_q
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_q2
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
 
@@ -100,13 +100,13 @@ python -m dscript.commands.train_q \
     ${EMBEDDING_DIM_FLAG} \
     ${TOPSY_TURVY} \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
-    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_q" \
+    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_q2" \
     --device "${DEVICE}" \
     --lr 0.0005 \
     --lambda 0.05 \
     --num-epoch 10 \
     --weight-decay 0 \
-    --batch-size 25 \
+    --batch-size 16 \
     --pool-width 9 \
     --kernel-width 7 \
     --dropout-p 0.2 \

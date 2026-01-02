@@ -2,7 +2,7 @@
 #SBATCH --job-name=n
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
-#SBATCH --constraint="a100-80G"
+# --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%A_bernett_train_n%a.out
@@ -41,7 +41,7 @@ EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_nb
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_n
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
 
@@ -106,7 +106,7 @@ python -m dscript.commands.train_n \
     --lambda 0.05 \
     --num-epoch 10 \
     --weight-decay 0 \
-    --batch-size 25 \
+    --batch-size 16 \
     --pool-width 9 \
     --kernel-width 7 \
     --dropout-p 0.2 \

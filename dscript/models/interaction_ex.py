@@ -337,9 +337,9 @@ class ModelInteraction(nn.Module):
         # Q = torch.relu(yhat - mu)
         # Q = torch.relu(yhat_fused - mu - (self.gamma * sigma))
         D = yhat_fused - mu - (self.gamma * sigma)
-        tau = 5.0
+        tau = 2.0
         phat = (1.0 / tau) * torch.logsumexp(D * tau, dim=(1, 2, 3))  # [B]
-
+      
         if self.do_sigmoid:
             phat = self.activation(phat).squeeze()
         return C, phat

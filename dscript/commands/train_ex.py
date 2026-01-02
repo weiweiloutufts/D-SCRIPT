@@ -515,7 +515,7 @@ def interaction_grad(
     ### Foldseek added here
     structural_context=None,
     # ---- prototype pull knobs
-    proto_weight=0.1,
+    proto_weight=0,
     proto_ema=0.99,
     proto_neg_weight=1,
 ):
@@ -625,7 +625,7 @@ def interaction_grad(
     # Backprop Loss
     loss.backward()
     # EMA update (no grad)
-    ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
+    #ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
 
     with torch.no_grad():
         p_guess = (p_hat.cpu() > 0.5).float()
@@ -678,7 +678,8 @@ def interaction_eval(
     b = len(y)
 
     with torch.no_grad():
-        p = p_hat.float().view(-1)
+        p_prob = torch.sigmoid(p_hat)
+        p = p_prob.float().view(-1)
         t = y.float().view(-1)
         pred = (p > 0.5).float()
 

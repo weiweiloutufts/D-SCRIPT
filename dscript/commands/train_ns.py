@@ -31,7 +31,7 @@ from ..foldseek import (
 from ..glider import glide_compute_map, glider_score
 from ..models.contact import ContactCNN
 from ..models.embedding import FullyConnectedEmbed
-from ..models.interaction_q import InteractionInputs, ModelInteraction
+from ..models.interaction_ns import InteractionInputs, ModelInteraction
 from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
 from ..utils import (
     PairedDataset,
@@ -289,28 +289,11 @@ def predict_cmap_interaction(
     b = len(n0)
 
     p_hat = []
+    aug_x_list = []
     c_map_mag = []
-
-    c_map_tensor = []
-    K_proto = 32
-
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
-        if model.training:
-            sigma = 0.1
-            scale_a = (
-                z_a.detach()
-                .std(dim=tuple(range(1, z_a.ndim)), keepdim=True)
-                .clamp_min(1e-6)
-            )
-            scale_b = (
-                z_b.detach()
-                .std(dim=tuple(range(1, z_b.ndim)), keepdim=True)
-                .clamp_min(1e-6)
-            )
-            z_a = z_a + torch.randn_like(z_a) * (sigma * scale_a)
-            z_b = z_b + torch.randn_like(z_b) * (sigma * scale_b)
 
         # Ensure 3D [B, L, D]
         z_a = add_batch_dim_if_needed(z_a)
@@ -374,7 +357,7 @@ def predict_cmap_interaction(
                 b_a = b_a.cuda()
                 b_b = b_b.cuda()
 
-        cm, ph = model.map_predict(
+        cm, ph, aug_x = model.map_predict(
             InteractionInputs(
                 z_a,
                 z_b,
@@ -388,16 +371,11 @@ def predict_cmap_interaction(
         )
         p_hat.append(ph)
         c_map_mag.append(torch.mean(cm))
-        # proto tensor
-        cm_k = F.interpolate(
-            cm, size=(K_proto, K_proto), mode="bilinear", align_corners=False
-        )  # [1,1,K,K]
-        c_map_tensor.append(cm_k.flatten())  # [K*K]
-
+        aug_x_list.append(aug_x.detach().cpu())
     p_hat = torch.stack(p_hat, 0).view(-1)  # [B]
     c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)  # [B]
-    c_map_tensor = torch.stack(c_map_tensor, dim=0)  # [B, K*K]
-    return c_map_mag, p_hat, c_map_tensor
+    all_aug_x = torch.cat(aug_x_list, dim=0)
+    return c_map_mag, p_hat, all_aug_x
 
 
 # TODO: Remove methods??
@@ -447,6 +425,11 @@ def make_mixup_params(batch_size: int, alpha: float, device):
     return perm, lam
 
 
+import torch
+
+import torch.nn.functional as F
+
+
 def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e-8):
     z_n = F.normalize(z_mix, p=2, dim=1, eps=eps)
     pos_n = F.normalize(pos_proto, p=2, dim=0, eps=eps)
@@ -457,6 +440,9 @@ def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e
 
     w = y_mix.clamp(0.0, 1.0)
     return (w * d_pos + neg_weight * (1.0 - w) * d_neg).mean()
+
+
+import torch
 
 
 @torch.no_grad()
@@ -549,20 +535,15 @@ def interaction_grad(
     :rtype: (torch.Tensor, int, torch.Tensor, int)
     """
 
-    c_map_mag, p_hat, c_map_tensor = predict_cmap_interaction(
+    c_map_mag, p_hat, z_mix = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     b = len(n0)
-
+    z_mix = z_mix.to(p_hat.device)
     if use_cuda:
         y = y.cuda()
     y = Variable(y).float().view(-1)
     y_hard = y.detach().float().view(-1)
-
-    # --- make mixup params ONCE (use model method)
-    perm, lam = model.make_mixup_params(b, alpha=0.3, device=p_hat.device)
-    lam = lam.float().view(-1)  # [B]
-    perm = perm.long()
 
     # --- smooth labels
     y_mix = smooth_labels(y, smoothing=0.1)
@@ -594,20 +575,11 @@ def interaction_grad(
     # --- prototype pull on map vectors
     proto_pull_loss = torch.tensor(0.0, device=p_hat.device)
     if proto_weight > 0:
-        z = c_map_tensor.to(p_hat.device)  # [B,D]
-        if z.dim() != 2 or z.shape[0] != b:
-            raise ValueError(f"Expected c_map_tensor as [B,D], got {tuple(z.shape)}")
-
-        # mix in proto space using SAME perm/lam
-        z_mix = lam[:, None] * z + (1.0 - lam)[:, None] * z[perm]  # [B,D]
-
         # lazy init prototype buffers
-        D = z.shape[1]
+        D = z_mix.shape[1]
         if not hasattr(model, "pos_proto_vec"):
             model.register_buffer("pos_proto_vec", torch.zeros(D, device=p_hat.device))
             model.register_buffer("neg_proto_vec", torch.zeros(D, device=p_hat.device))
-
-        
 
         # cosine pull loss
         proto_pull_loss = cosine_proto_pull(
@@ -627,14 +599,15 @@ def interaction_grad(
 
     # Backprop Loss
     loss.backward()
-    
+
     # EMA update (no grad)
-    ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
+    #ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
 
     with torch.no_grad():
-        p_guess = (p_hat.cpu() > 0.5).float()
-        correct = torch.sum(p_guess == y_hard.cpu()).item()
-        mse = torch.mean((y_hard.cpu() - p_hat.cpu()) ** 2).item()
+        p_prob  = torch.sigmoid(p_hat) 
+        p_guess = (p_prob > 0.5).float()
+        correct = torch.sum(p_guess == y).item()
+        mse = torch.mean((y - p_hat) ** 2).item()
 
     return loss, correct, mse, b
 
@@ -682,7 +655,8 @@ def interaction_eval(
     b = len(y)
 
     with torch.no_grad():
-        p = p_hat.float().view(-1)
+        p_prob  = torch.sigmoid(p_hat) 
+        p = p_prob.float().view(-1)
         t = y.float().view(-1)
         pred = (p > 0.5).float()
 
