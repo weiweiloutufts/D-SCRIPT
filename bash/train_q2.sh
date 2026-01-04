@@ -5,8 +5,8 @@
 # --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
-#SBATCH --output=logs/%A_bernett_train_q_%a.out
-#SBATCH --error=logs/%A_bernett_train_q_%a.err
+#SBATCH --output=logs/%A_bernett_train_q2_%a.out
+#SBATCH --error=logs/%A_bernett_train_q2_%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
@@ -93,7 +93,7 @@ if [ ! -d "${OUTPUT_FOLDER}" ]; then
     mkdir -p "${OUTPUT_FOLDER}"
 fi
 
-python -m dscript.commands.train_q \
+python -m dscript.commands.train_q2 \
     --train "${TRAIN}" \
     --test "${TEST}" \
     ${EMBEDDING_FLAG} \
@@ -102,7 +102,7 @@ python -m dscript.commands.train_q \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
     --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_q2" \
     --device "${DEVICE}" \
-    --lr 0.0005 \
+    --lr 0.0003 \
     --lambda 0.05 \
     --num-epoch 10 \
     --weight-decay 0 \

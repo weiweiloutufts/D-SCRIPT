@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=noise
+#SBATCH --job-name=q1
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
-#SBATCH --constraint="a100-80G"
+# --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
-#SBATCH --output=logs/%A_bernett_train_noise%a.out
-#SBATCH --error=logs/%A_bernett_train_noise%a.err
+#SBATCH --output=logs/%A_bernett_train_q1_%a.out
+#SBATCH --error=logs/%A_bernett_train_q1_%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
@@ -41,7 +41,7 @@ EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_noise
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_q1
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
 
@@ -93,20 +93,20 @@ if [ ! -d "${OUTPUT_FOLDER}" ]; then
     mkdir -p "${OUTPUT_FOLDER}"
 fi
 
-python -m dscript.commands.train_noise \
+python -m dscript.commands.train_q1 \
     --train "${TRAIN}" \
     --test "${TEST}" \
     ${EMBEDDING_FLAG} \
     ${EMBEDDING_DIM_FLAG} \
     ${TOPSY_TURVY} \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
-    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_noise" \
+    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_q1" \
     --device "${DEVICE}" \
-    --lr 0.0005 \
+    --lr 0.0003 \
     --lambda 0.05 \
     --num-epoch 10 \
     --weight-decay 0 \
-    --batch-size 25 \
+    --batch-size 16 \
     --pool-width 9 \
     --kernel-width 7 \
     --dropout-p 0.2 \

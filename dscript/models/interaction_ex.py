@@ -6,7 +6,7 @@ from .contact import ContactCNN
 from .embedding import FullyConnectedEmbed
 
 from dataclasses import dataclass
-
+import torch.nn.functional as F
 
 @dataclass
 class InteractionInputs:
@@ -93,6 +93,67 @@ class LogisticActivation(nn.Module):
         self.k.data.clamp_(min=0)
 
 
+class PairClassifier2D(nn.Module):
+    def __init__(self, p_size, p_drop=0.2,min_dim= 16):
+        super().__init__()
+        self.p_size = p_size
+        self.dropout = nn.Dropout(p_drop)
+        self.emb_dim = 2 * p_size * p_size
+        
+        d1 = max(min_dim, self.emb_dim // 8)
+        d2 = max(min_dim, self.emb_dim // 64)
+        d3 = max(min_dim, self.emb_dim // 128)
+        
+        self.head = nn.Sequential(
+            nn.Linear(self.emb_dim, d1),
+            nn.ReLU(),
+            nn.LayerNorm(d1),
+            nn.Linear(d1, d2),
+            nn.ReLU(),
+            nn.LayerNorm(d2),
+            nn.Linear(d2, d3),
+            nn.ReLU(),
+            nn.LayerNorm(d3),
+            nn.Linear(d3, 1),  # logit
+        )
+
+    def forward(self, yhat_fused,gamma):
+        # ---- soft mask from map statistics (per sample)
+        mu = yhat_fused.mean(dim=(1,2,3), keepdim=True)   # [B,1,1,1]
+        var = yhat_fused.var(dim=(1, 2, 3), keepdim=True, unbiased=False).clamp_min(1e-6)
+        std = var.sqrt()
+       
+        # change sigma to std
+        D = yhat_fused - mu - (gamma * std) 
+        Q = torch.sigmoid(D * 5.0)                                  # [B,1,N,M]
+        
+        phat = (Q * yhat_fused).sum(dim=(1,2,3)) / (Q.sum(dim=(1,2,3)) + 1e-6)
+        scale = torch.sigmoid(phat).view(-1,1,1,1)      # (0,1)
+        
+        x = yhat_fused * (1.0 + scale)                 
+        
+        # ---- shrink to fixed p_size x p_size then flatten
+        avg = F.adaptive_avg_pool2d(x, (self.p_size, self.p_size))
+        mx  = F.adaptive_max_pool2d(x, (self.p_size, self.p_size))
+        x_flat = torch.cat([avg, mx], dim=1).flatten(1)   # [B, 2*p*p]
+
+        # default: no augmentation
+        x_aug = x_flat
+        lam = None
+        index = None
+
+        # if self.training:
+        #     B = x_flat.size(0)
+        #     lam = torch.empty(B, 1, device=x_flat.device).uniform_(0.75, 0.95)
+        #     index = torch.randperm(B, device=x_flat.device)
+        #     x_aug = lam * x_flat + (1.0 - lam) * x_flat[index]  # [B,2H]
+
+        x_aug = self.dropout(x_aug)
+        logit = self.head(x_aug).squeeze(1)  # [B]
+
+        return logit, x_aug, lam, index
+
+
 class ModelInteraction(nn.Module):
     def __init__(
         self,
@@ -162,6 +223,7 @@ class ModelInteraction(nn.Module):
         D = self.embedding.nout  # = 100
         self.g_proj = nn.Linear(D, k)
         self.yhat_fuse = nn.Conv2d(1 + 2 * k, 1, kernel_size=1, bias=True)
+        self.clf = PairClassifier2D(p_size = 256,p_drop=0.2,min_dim= 16)
 
     def clip(self):
         """
@@ -325,24 +387,13 @@ class ModelInteraction(nn.Module):
 
         yhat_cat = torch.cat([yhat, ga_map, gm_map], dim=1)  # [B,1+2k,N,M]
         yhat_fused = self.yhat_fuse(yhat_cat)  # [B,1,N,M]
-
+        
         if self.do_pool:
             yhat_fused = self.maxPool(yhat_fused)
+     
+        phat, z,lam, index = self.clf(yhat_fused,self.gamma)  # [B]
 
-        # Mean of contact predictions where p_ij > mu + gamma*sigma
-        mu = yhat_fused.mean(dim=(1, 2, 3), keepdim=True)
-        sigma = yhat_fused.var(dim=(1, 2, 3), keepdim=True, unbiased=False).clamp_min(
-            1e-6
-        )
-        # Q = torch.relu(yhat - mu)
-        # Q = torch.relu(yhat_fused - mu - (self.gamma * sigma))
-        D = yhat_fused - mu - (self.gamma * sigma)
-        tau = 2.0
-        phat = (1.0 / tau) * torch.logsumexp(D * tau, dim=(1, 2, 3))  # [B]
-      
-        if self.do_sigmoid:
-            phat = self.activation(phat).squeeze()
-        return C, phat
+        return C, phat, z,lam, index
 
     # INTERNAL
     def predict(
@@ -366,7 +417,7 @@ class ModelInteraction(nn.Module):
         :return: Predicted probability of interaction
         :rtype: torch.Tensor, torch.Tensor
         """
-        _, phat = self.map_predict(
+        _, phat, _,_, _ = self.map_predict(
             z0,
             z1,
             embed_foldseek=embed_foldseek,

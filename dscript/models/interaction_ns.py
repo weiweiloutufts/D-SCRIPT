@@ -94,7 +94,7 @@ class LogisticActivation(nn.Module):
 
 
 class PairClassifier2D(nn.Module):
-    def __init__(self, hidden=32, p_drop=0.2):
+    def __init__(self, hidden=128, p_drop=0.2):
         super().__init__()
         self.feat = nn.Sequential(
             nn.Conv2d(1, hidden, 3, padding=1),
@@ -104,20 +104,24 @@ class PairClassifier2D(nn.Module):
         )
         self.dropout = nn.Dropout(p_drop)
         self.head = nn.Sequential(
-            nn.Linear(hidden * 2, hidden),
+            nn.Linear(hidden * 2, hidden // 2),
             nn.ReLU(),
-            nn.Linear(hidden, 1),  # logit
+            nn.Linear(hidden // 2, 1),
         )
 
     def forward(self, yhat_fused,gamma):
         # compute Q from yhat_fused
-        mu = yhat_fused.mean(dim=(2, 3), keepdim=True)              # [B,1,1,1]
-        sigma = yhat_fused.var(dim=(2, 3), keepdim=True, unbiased=False)  
-        # [B,1,1,1]
-        D = yhat_fused - mu - (gamma * sigma)                  # [B,1,N,M]
-        Q = torch.sigmoid(D * 5.0)                                  # [B,1,N,M]
+        mu = yhat_fused.mean(dim=(1,2,3), keepdim=True)   # [B,1,1,1]
+        sigma = yhat_fused.var(dim=(1,2,3), keepdim=True, unbiased=False).clamp_min(1e-6)
 
-        inp = yhat_fused+yhat_fused * Q         # [B,1,N,M]                    
+        # [B,1,1,1]
+        D = yhat_fused - mu - (gamma * sigma) 
+        temp = 5.0# [B,1,N,M]
+        Q = torch.sigmoid(D * temp)                                  # [B,1,N,M]
+        phat = (Q * yhat_fused).sum(dim=(1,2,3)) / (Q.sum(dim=(1,2,3)) + 1e-6)
+        
+        scale = torch.sigmoid(phat).view(-1,1,1,1)      # (0,1)
+        inp = yhat_fused * (1.0 + scale)                 
         
         x = self.feat(inp)  # [B,H,N,M]
 
@@ -127,7 +131,7 @@ class PairClassifier2D(nn.Module):
         x = torch.cat([x_mean, x_max], dim=1)  # [B,2H]
 
         # default: no augmentation
-        x_aug = x
+        x_aug = x 
         lam = None
         index = None
 
@@ -135,13 +139,12 @@ class PairClassifier2D(nn.Module):
             B = x.size(0)
             lam = torch.empty(B, 1, device=x.device).uniform_(0.75, 0.95)
             index = torch.randperm(B, device=x.device)
-
             x_aug = lam * x + (1.0 - lam) * x[index]  # [B,2H]
 
         x_aug = self.dropout(x_aug)
         logit = self.head(x_aug).squeeze(1)  # [B]
 
-        return logit, x_aug
+        return logit, x_aug, lam, index
 
 
 class ModelInteraction(nn.Module):
@@ -213,7 +216,7 @@ class ModelInteraction(nn.Module):
         D = self.embedding.nout  # = 100
         self.g_proj = nn.Linear(D, k)
         self.yhat_fuse = nn.Conv2d(1 + 2 * k, 1, kernel_size=1, bias=True)
-        self.clf = PairClassifier2D(hidden=32, p_drop=0.2)
+        self.clf = PairClassifier2D(hidden=128, p_drop=0.2)
 
     def clip(self):
         """
@@ -379,11 +382,11 @@ class ModelInteraction(nn.Module):
         yhat_fused = self.yhat_fuse(yhat_cat)  # [B,1,N,M]
         
         if self.do_pool:
-            yhat_fused = self.maxPool(yhat_fused,self.gamma)
+            yhat_fused = self.maxPool(yhat_fused)
      
-        phat, z = self.clf(yhat_fused,self.gamma)  # [B]
+        logit, z, lam, index = self.clf(yhat_fused,self.gamma)  # [B]
 
-        return C, phat, z
+        return C, logit, z,lam, index
 
     # INTERNAL
     def predict(
@@ -407,7 +410,7 @@ class ModelInteraction(nn.Module):
         :return: Predicted probability of interaction
         :rtype: torch.Tensor, torch.Tensor
         """
-        _, phat, _ = self.map_predict(
+        _, phat, _,_, _ = self.map_predict(
             z0,
             z1,
             embed_foldseek=embed_foldseek,

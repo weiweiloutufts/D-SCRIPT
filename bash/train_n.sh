@@ -102,11 +102,11 @@ python -m dscript.commands.train_n \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
     --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_n" \
     --device "${DEVICE}" \
-    --lr 0.0005 \
+    --lr 0.0003 \
     --lambda 0.05 \
     --num-epoch 10 \
     --weight-decay 0 \
-    --batch-size 16 \
+    --batch-size 8 \
     --pool-width 9 \
     --kernel-width 7 \
     --dropout-p 0.2 \

@@ -32,7 +32,7 @@ from tqdm import tqdm
 from pathlib import Path
 from dscript.loading import LoadingPool
 
-from dscript.models.interaction_q import InteractionInputs
+from dscript.models.interaction import InteractionInputs
 
 from ..foldseek import get_foldseek_onehot, build_backbone_vocab
 from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
@@ -196,21 +196,20 @@ def log_eval_metrics(
     if n == 0:
         loss = float("nan")
     else:
-        logits = torch.from_numpy(phats).float()      # [n]
-        y = torch.from_numpy(labels).float()     # [n]
-        
-        loss = F.binary_cross_entropy_with_logits(logits, y, reduction="mean").item()
-        p_prob = torch.sigmoid(logits).cpu().numpy()
+        p = torch.from_numpy(phats).float().clamp(1e-7, 1 - 1e-7)
+        y = torch.from_numpy(labels).float()
+        loss = float(F.binary_cross_entropy(p, y, reduction="mean").item())
+
     # Other metrics
     if n == 0:
         aupr = auroc = acc = prec = rec = f1 = mse = float("nan")
     else:
         y_true_int = labels.astype(int)
-        y_pred = (p_prob >= threshold).astype(int)
+        y_pred = (phats >= threshold).astype(int)
 
-        aupr = float(average_precision_score(y_true_int, p_prob))
+        aupr = float(average_precision_score(y_true_int, phats))
         auroc = (
-            float(roc_auc_score(y_true_int, p_prob))
+            float(roc_auc_score(y_true_int, phats))
             if len(np.unique(y_true_int)) > 1
             else float("nan")
         )
@@ -219,17 +218,20 @@ def log_eval_metrics(
         prec = float(precision_score(y_true_int, y_pred, zero_division=0))
         rec = float(recall_score(y_true_int, y_pred, zero_division=0))
         f1 = float(f1_score(y_true_int, y_pred, zero_division=0))
-        mse = float(mean_squared_error(y_true_int, p_prob))
+        mse = float(mean_squared_error(y_true_int, phats))
 
     with open(out_path_prefix + "_metrics.txt", "w+") as f:
-       
         log(
-            "split,n,threshold,loss,aupr,auroc,accuracy,mse,precision,recall,f1",
-            file=f,
-        )
-        log(
-            f"{split_name},{n},{threshold:.6f},{loss:.6f},{aupr:.6f},"
-            f"{auroc:.6f},{acc:.6f},{mse:.6f},{prec:.6f},{rec:.6f},{f1:.6f}",
+            f"[{split_name}] n: {n}\n"
+            f"[{split_name}] threshold: {threshold}\n"
+            f"[{split_name}] loss: {loss:.6f}\n"
+            f"[{split_name}] AUPR: {aupr:.6f}\n"
+            f"[{split_name}] AUROC: {auroc:.6f}\n"
+            f"[{split_name}] accuracy: {acc:.6f}\n"
+            f"[{split_name}] mse: {mse:.6f}\n"
+            f"[{split_name}] precision: {prec:.6f}\n"
+            f"[{split_name}] recall: {rec:.6f}\n"
+            f"[{split_name}] f1: {f1:.6f}",
             file=f,
         )
 
@@ -385,7 +387,7 @@ def main(args):
                     b0=b_a,
                     b1=b_b,
                 )
-                _, pred= model.map_predict(interactionInputs)
+                _, pred, _ = model.map_predict(interactionInputs)
                 pred = pred.item()
 
                 phats.append(pred)

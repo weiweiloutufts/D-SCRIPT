@@ -357,7 +357,7 @@ def predict_cmap_interaction(
                 b_a = b_a.cuda()
                 b_b = b_b.cuda()
 
-        cm, ph, aug_x = model.map_predict(
+        cm, ph, aug_x,lam, index = model.map_predict(
             InteractionInputs(
                 z_a,
                 z_b,
@@ -375,7 +375,7 @@ def predict_cmap_interaction(
     p_hat = torch.stack(p_hat, 0).view(-1)  # [B]
     c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)  # [B]
     all_aug_x = torch.cat(aug_x_list, dim=0)
-    return c_map_mag, p_hat, all_aug_x
+    return c_map_mag, p_hat, all_aug_x,lam, index
 
 
 # TODO: Remove methods??
@@ -403,7 +403,7 @@ def predict_interaction(
     :param use_cuda: Whether to use GPU
     :type use_cuda: bool
     """
-    _, p_hat, _ = predict_cmap_interaction(
+    _, p_hat, _,lam, index = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     return p_hat
@@ -535,7 +535,7 @@ def interaction_grad(
     :rtype: (torch.Tensor, int, torch.Tensor, int)
     """
 
-    c_map_mag, p_hat, z_mix = predict_cmap_interaction(
+    c_map_mag, p_hat, z_mix,lam, index = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     b = len(n0)
@@ -543,14 +543,14 @@ def interaction_grad(
     if use_cuda:
         y = y.cuda()
     y = Variable(y).float().view(-1)
-    y_hard = y.detach().float().view(-1)
 
     # --- smooth labels
-    y_mix = smooth_labels(y, smoothing=0.1)
+    y_mix = lam.squeeze(1) * y + (1 - lam.squeeze(1)) * y[index]
+    y_mix = smooth_labels(y_mix, smoothing=0.1)
 
     # --- BCE (make sure shapes match)
-    p_hat = p_hat.float().view(-1).clamp(1e-6, 1.0 - 1e-6)  # [B]
-    bce_loss = F.binary_cross_entropy_with_logits(p_hat, y_mix)  # scalar
+    logits = p_hat.view(-1).float()  # rename it logits everywhere
+    bce_loss = F.binary_cross_entropy_with_logits(logits, y_mix) 
 
     if run_tt:
         g_score = []
@@ -571,7 +571,11 @@ def interaction_grad(
         accuracy_loss = bce_loss
 
     representation_loss = torch.mean(c_map_mag)
-
+    
+    # Reconfigure the loss
+    representation_loss = representation_loss.detach() * 0.0 
+    accuracy_weight = 1.0
+    
     # --- prototype pull on map vectors
     proto_pull_loss = torch.tensor(0.0, device=p_hat.device)
     if proto_weight > 0:
@@ -604,12 +608,13 @@ def interaction_grad(
     #ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
 
     with torch.no_grad():
-        p_prob  = torch.sigmoid(p_hat) 
+        p_prob = torch.sigmoid(logits)
         p_guess = (p_prob > 0.5).float()
-        correct = torch.sum(p_guess == y).item()
-        mse = torch.mean((y - p_hat) ** 2).item()
+        correct = (p_guess == y).sum().item()
+        mse = ((y - p_prob) ** 2).mean().item()
+        assert torch.isfinite(logits).all()
 
-    return loss, correct, mse, b
+    return float(loss.item()), correct, mse, b
 
 
 def interaction_eval(
@@ -636,45 +641,45 @@ def interaction_eval(
     :return: (Loss, number correct, mean square error, precision, recall, F1 Score, AUPR)
     :rtype: (torch.Tensor, int, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor)
     """
-    p_hat = []
-    true_y = []
+    p_hat_list = []
+    y_list = []
 
     for n0, n1, y in test_iterator:
-        p_hat.append(
-            predict_interaction(model, n0, n1, tensors, use_cuda, structural_context)
-        )
-        true_y.append(y)
+        # predict_interaction should return logits shaped [B] or [B,1]
+        logits = predict_interaction(model, n0, n1, tensors, use_cuda, structural_context)
+        p_hat_list.append(logits.view(-1))   # force [B]
+        y_list.append(y.view(-1))            # force [B]
 
-    y = torch.cat(true_y, 0)
-    p_hat = torch.cat(p_hat, 0)
+    logits = torch.cat(p_hat_list, dim=0)    # [N]
+    y = torch.cat(y_list, dim=0).float()     # [N]
 
-    device = p_hat.device
+    device = logits.device
     y = y.to(device)
 
-    loss = F.binary_cross_entropy(p_hat.float(), y.float()).item()
-    b = len(y)
+    # --- Loss: logits + targets
+    loss = F.binary_cross_entropy_with_logits(logits, y).item()
 
     with torch.no_grad():
-        p_prob  = torch.sigmoid(p_hat) 
-        p = p_prob.float().view(-1)
-        t = y.float().view(-1)
+        p = torch.sigmoid(logits)            # [N] probabilities
+
         pred = (p > 0.5).float()
-
         correct = (pred == y).sum().item()
-        mse = torch.mean((y.float() - p_hat) ** 2).item()
 
-        tp = torch.sum(pred * t).item()
-        fp = torch.sum(pred * (1 - t)).item()
-        fn = torch.sum((1 - pred) * t).item()
+        # MSE should be on probabilities vs labels (not logits)
+        mse = torch.mean((y - p) ** 2).item()
+
+        tp = torch.sum(pred * y).item()
+        fp = torch.sum(pred * (1 - y)).item()
+        fn = torch.sum((1 - pred) * y).item()
 
         pr = tp / (tp + fp + 1e-8)
         re = tp / (tp + fn + 1e-8)
         f1 = 2 * pr * re / (pr + re + 1e-8)
 
-    y = y.cpu().numpy()
-    p_hat = p_hat.data.cpu().numpy()
-
-    aupr = average_precision(y, p_hat)
+    # --- AUPR: use probs (recommended)
+    y_np = y.detach().cpu().numpy()
+    p_np = p.detach().cpu().numpy()
+    aupr = average_precision(y_np, p_np)
 
     return loss, correct, mse, pr, re, f1, aupr
 

@@ -6,7 +6,7 @@ from .contact import ContactCNN
 from .embedding import FullyConnectedEmbed
 
 from dataclasses import dataclass
-
+import math
 
 @dataclass
 class InteractionInputs:
@@ -275,11 +275,13 @@ class ModelInteraction(nn.Module):
         return perm, lam
 
     def map_predict(self, *args, **kwargs):
+        cpredInputs = None
         if len(args) == 1 and isinstance(args[0], InteractionInputs):
             cpredInputs = args[0]
-
-        if len(args) >= 2:
+        elif len(args) >= 2:
             cpredInputs = self._build_interaction_inputs(*args, **kwargs)
+        else:
+            raise TypeError("map_predict expected InteractionInputs or (z0,z1,...)")
 
         C, g_add, g_mul = self.cpred(cpredInputs)
 
@@ -329,15 +331,21 @@ class ModelInteraction(nn.Module):
         if self.do_pool:
             yhat_fused = self.maxPool(yhat_fused)
 
-        # Mean of contact predictions where p_ij > mu + gamma*sigma
-        mu = yhat.mean(dim=(1,2,3), keepdim=True)                    # [B,1,1,1]
-        sigma = yhat.var(dim=(1,2,3), keepdim=True, unbiased=False).clamp_min(1e-6)
-        # Q = torch.relu(yhat - mu)
-        D = yhat - mu - (self.gamma * sigma)
-        Q = torch.sigmoid(D * 5)  # Soft mask: 1 for active, 0 for inactive
-        phat = torch.sum(Q * yhat_fused) / (torch.sum(Q) + 1e-6)
-        if self.do_sigmoid:
-            phat = self.activation(phat).squeeze()
+        # # Mean of contact predictions where p_ij > mu + gamma*sigma
+        # mu = yhat.mean(dim=(1,2,3), keepdim=True)                    # [B,1,1,1]
+        # sigma = yhat.var(dim=(1,2,3), keepdim=True, unbiased=False).clamp_min(1e-6)
+        # std = sigma.sqrt()
+        # # Q = torch.relu(yhat - mu)
+        # D = yhat - mu - (self.gamma * std)
+        # Q = torch.sigmoid(D * 5)  # Soft mask: 1 for active, 0 for inactive
+        # phat = (Q * yhat_fused).sum(dim=(1,2,3)) / (Q.sum(dim=(1,2,3)) + 1e-6)
+        
+        tau = 5.0
+        x = (yhat_fused * tau).clamp(-50, 50)
+        
+        K = yhat_fused.shape[1] * yhat_fused.shape[2] * yhat_fused.shape[3]#1*N*M
+        phat = (torch.logsumexp(x, dim=(1,2,3)) - math.log(K)) / tau          # [B]
+        print("phat min/max:", phat.min().item(), phat.max().item())
         return C, phat
 
     # INTERNAL
