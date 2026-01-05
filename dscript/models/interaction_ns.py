@@ -113,9 +113,9 @@ class PairClassifier2D(nn.Module):
         # compute Q from yhat_fused
         mu = yhat_fused.mean(dim=(1,2,3), keepdim=True)   # [B,1,1,1]
         sigma = yhat_fused.var(dim=(1,2,3), keepdim=True, unbiased=False).clamp_min(1e-6)
-
+        std = sigma.sqrt()
         # [B,1,1,1]
-        D = yhat_fused - mu - (gamma * sigma) 
+        D = yhat_fused - mu - (gamma * std) 
         temp = 5.0# [B,1,N,M]
         Q = torch.sigmoid(D * temp)                                  # [B,1,N,M]
         phat = (Q * yhat_fused).sum(dim=(1,2,3)) / (Q.sum(dim=(1,2,3)) + 1e-6)
