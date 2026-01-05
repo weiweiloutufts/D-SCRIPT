@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=q1
+#SBATCH --job-name=q1b
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 # --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=72:00:00
-#SBATCH --output=logs/%A_bernett_train_q1_%a.out
-#SBATCH --error=logs/%A_bernett_train_q1_%a.err
+#SBATCH --output=logs/%A_bernett_train_q1b_%a.out
+#SBATCH --error=logs/%A_bernett_train_q1b_%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
@@ -41,7 +41,7 @@ EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_q1
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_q1b
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
 
@@ -102,7 +102,7 @@ python -m dscript.commands.train_q1 \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
     --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_q1" \
     --device "${DEVICE}" \
-    --lr 0.0003 \
+    --lr 0.0005 \
     --lambda 0.05 \
     --num-epoch 10 \
     --weight-decay 0 \

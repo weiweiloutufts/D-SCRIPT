@@ -102,7 +102,7 @@ python -m dscript.commands.train_ns \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
     --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_n" \
     --device "${DEVICE}" \
-    --lr 0.0003 \
+    --lr 0.0005 \
     --lambda 0.05 \
     --num-epoch 10 \
     --weight-decay 0 \
