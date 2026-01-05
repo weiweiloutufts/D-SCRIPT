@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:a100:1
 # --constraint="a100-80G"
 #SBATCH --mem=128G
-#SBATCH --time=48:00:00
+#SBATCH --time=72:00:00
 #SBATCH --output=logs/%A_bernett_train_q1_%a.out
 #SBATCH --error=logs/%A_bernett_train_q1_%a.err
 #SBATCH --mail-type=ALL

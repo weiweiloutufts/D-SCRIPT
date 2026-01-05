@@ -2,7 +2,7 @@
 #SBATCH --job-name=ex
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
-# --constraint="a100-80G"
+#SBATCH --constraint="a100-80G"
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
 #SBATCH --output=logs/%A_bernett_train_ex_%a.out
@@ -106,7 +106,7 @@ python -m dscript.commands.train_ex \
     --lambda 0.05 \
     --num-epoch 10 \
     --weight-decay 0 \
-    --batch-size 8 \
+    --batch-size 25 \
     --pool-width 9 \
     --kernel-width 7 \
     --dropout-p 0.2 \

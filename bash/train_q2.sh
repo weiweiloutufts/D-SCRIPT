@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:a100:1
 # --constraint="a100-80G"
 #SBATCH --mem=128G
-#SBATCH --time=48:00:00
+#SBATCH --time=72:00:00
 #SBATCH --output=logs/%A_bernett_train_q2_%a.out
 #SBATCH --error=logs/%A_bernett_train_q2_%a.err
 #SBATCH --mail-type=ALL
@@ -16,7 +16,7 @@ module load anaconda/2024.10
 #module load pytorch/2.5.1-cuda12.1-cudnn9
 
 
-#cd /cluster/tufts/cowenlab/wlou01/D-SCRIPT
+cd /cluster/tufts/cowenlab/wlou01/D-SCRIPT
 
 module purge   
 hash -r
