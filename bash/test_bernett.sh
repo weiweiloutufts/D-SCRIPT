@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=test_q
-#SBATCH -p batch
-# --gres=gpu:a100:1
+#SBATCH --job-name=test_q1b
+#SBATCH -p gpu
+#SBATCH --gres=gpu:a100:1
 #SBATCH --mem=256G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/%A_test_%a.out
@@ -37,7 +37,7 @@ FOLDSEEK_VOCAB=../data/foldseek_vocab.json
 MODEL_PARAMS=""
 DEVICE=0
 # Set default model here:
-MODEL=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results/bernett_esm2_train_q/bernett_q_epoch07.sav
+MODEL=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results/bernett_esm2_train_q1b/bernett_q1_epoch01.sav
 
 usage() {
     echo "USAGE: ./test.sh [-d DEVICE] [-m MODEL] [-T MODEL_TYPE]

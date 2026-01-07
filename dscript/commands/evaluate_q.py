@@ -32,7 +32,7 @@ from tqdm import tqdm
 from pathlib import Path
 from dscript.loading import LoadingPool
 
-from dscript.models.interaction_q import InteractionInputs
+from dscript.models.interaction_q1 import InteractionInputs
 
 from ..foldseek import get_foldseek_onehot, build_backbone_vocab
 from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed

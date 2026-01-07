@@ -928,6 +928,7 @@ def train_model(args, output):
 
         # Train batches
         for z0, z1, y in train_iterator:
+            optim.zero_grad()
             loss, correct, mse, b = interaction_grad(
                 model,
                 z0,
@@ -954,10 +955,12 @@ def train_model(args, output):
             mse_accum += delta / n
 
             report = (n - b) // 100 < n // 100
-
+            
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) 
             optim.step()
-            optim.zero_grad()
             model.clip()
+           
+            
 
             if report:
                 tokens = [

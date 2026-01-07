@@ -106,7 +106,7 @@ python -m dscript.commands.train_n \
     --lambda 0.05 \
     --num-epoch 10 \
     --weight-decay 0 \
-    --batch-size 25 \
+    --batch-size 16 \
     --pool-width 9 \
     --kernel-width 7 \
     --dropout-p 0.2 \

@@ -171,11 +171,12 @@ class ModelInteraction(nn.Module):
         """
         self.contact.clip()
 
-        if self.do_w:
-            self.theta.data.clamp_(min=0, max=1)
-            self.lambda_.data.clamp_(min=0)
+        with torch.no_grad():
+            if self.do_w:
+                self.theta.clamp_(0, 1)
+                self.lambda_.clamp_(min=0)
 
-        self.gamma.data.clamp_(min=0)
+            self.gamma.clamp_(min=0)
 
     def embed(self, x):
         """
