@@ -19,6 +19,8 @@ import wandb
 from sklearn.metrics import average_precision_score as average_precision
 from torch.autograd import Variable
 from tqdm import tqdm
+import os
+import torch_optimizer as optim
 
 from .. import __version__
 from ..fasta import parse_dict
@@ -235,17 +237,6 @@ def add_args(parser):
     misc_grp.add_argument(
         "--wandb-project", default=None, help="Weights and Biases project name"
     )
-    misc_grp.add_argument(
-        "--wandb-name",
-        default=None,
-        help="Short descriptive Weights and Biases run name",
-    )
-    misc_grp.add_argument(
-        "--wandb-tags",
-        nargs="+",
-        default=None,
-        help="Weights and Biases tags associated with run",
-    )
 
     ## Foldseek arguments
     foldseek_grp.add_argument(
@@ -300,28 +291,11 @@ def predict_cmap_interaction(
     b = len(n0)
 
     p_hat = []
+    #aug_x_list = []
     c_map_mag = []
-
-    c_map_tensor = []
-    K_proto = 32
-
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
-        if model.training:
-            sigma = 0.02
-            scale_a = (
-                z_a.detach()
-                .std(dim=tuple(range(1, z_a.ndim)), keepdim=True)
-                .clamp_min(1e-6)
-            )
-            scale_b = (
-                z_b.detach()
-                .std(dim=tuple(range(1, z_b.ndim)), keepdim=True)
-                .clamp_min(1e-6)
-            )
-            z_a = z_a + torch.randn_like(z_a) * (sigma * scale_a)
-            z_b = z_b + torch.randn_like(z_b) * (sigma * scale_b)
 
         # Ensure 3D [B, L, D]
         z_a = add_batch_dim_if_needed(z_a)
@@ -363,7 +337,7 @@ def predict_cmap_interaction(
         if structural_context.allow_backbone3di:
             assert (
                 structural_context.backbone_record is not None
-                and structural_context.backbone_vocab is not None
+                and structural_context.fold_vocab is not None
             )
             b_a = get_foldseek_onehot(
                 n0[i],
@@ -399,16 +373,13 @@ def predict_cmap_interaction(
         )
         p_hat.append(ph)
         c_map_mag.append(torch.mean(cm))
-        # proto tensor
-        cm_k = F.interpolate(
-            cm, size=(K_proto, K_proto), mode="bilinear", align_corners=False
-        )  # [1,1,K,K]
-        c_map_tensor.append(cm_k.flatten())  # [K*K]
-
+     #   aug_x_list.append(aug_x.detach().cpu())
     p_hat = torch.stack(p_hat, 0).view(-1)  # [B]
     c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)  # [B]
-    c_map_tensor = torch.stack(c_map_tensor, dim=0)  # [B, K*K]
-    return c_map_mag, p_hat, c_map_tensor
+    #all_aug_x = torch.cat(aug_x_list, dim=0)
+    
+  
+    return c_map_mag, p_hat
 
 
 # TODO: Remove methods??
@@ -436,7 +407,7 @@ def predict_interaction(
     :param use_cuda: Whether to use GPU
     :type use_cuda: bool
     """
-    _, p_hat, _ = predict_cmap_interaction(
+    _, p_hat = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     return p_hat
@@ -460,11 +431,13 @@ def make_mixup_params(batch_size: int, alpha: float, device):
 
 import torch
 
+import torch.nn.functional as F
+
 
 def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e-8):
-    z_n = z_mix / z_mix.norm(dim=1, keepdim=True).clamp_min(eps)
-    pos_n = pos_proto / pos_proto.norm().clamp_min(eps)
-    neg_n = neg_proto / neg_proto.norm().clamp_min(eps)
+    z_n = F.normalize(z_mix, p=2, dim=1, eps=eps)
+    pos_n = F.normalize(pos_proto, p=2, dim=0, eps=eps)
+    neg_n = F.normalize(neg_proto, p=2, dim=0, eps=eps)
 
     d_pos = 1.0 - (z_n * pos_n[None, :]).sum(dim=1)
     d_neg = 1.0 - (z_n * neg_n[None, :]).sum(dim=1)
@@ -473,30 +446,8 @@ def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e
     return (w * d_pos + neg_weight * (1.0 - w) * d_neg).mean()
 
 
-@torch.no_grad()
-def ema_update_protos(
-    model,
-    z_mix: torch.Tensor,
-    y_mix: torch.Tensor,
-    ema: float = 0.99,
-    min_mass: float = 1e-3,
-):
-    """
-    Updates model.pos_proto_vec and model.neg_proto_vec in-place.
-    z_mix: [B,D]
-    y_mix: [B]
-    """
-    w = y_mix.clamp(0.0, 1.0)  # [B]
-    wp = w.sum()
-    wn = (1.0 - w).sum()
-
-    if wp > min_mass:
-        batch_pos = (w[:, None] * z_mix).sum(dim=0) / wp  # [D]
-        model.pos_proto_vec.mul_(ema).add_((1.0 - ema) * batch_pos)
-
-    if wn > min_mass:
-        batch_neg = ((1.0 - w)[:, None] * z_mix).sum(dim=0) / wn  # [D]
-        model.neg_proto_vec.mul_(ema).add_((1.0 - ema) * batch_neg)
+def smooth_labels(labels, smoothing=0.1):
+    return labels * (1 - smoothing) + 0.5 * smoothing
 
 
 def interaction_grad(
@@ -513,10 +464,6 @@ def interaction_grad(
     use_cuda=True,
     ### Foldseek added here
     structural_context=None,
-    # ---- prototype pull knobs
-    proto_weight=0.1,
-    proto_ema=0.75,
-    proto_neg_weight=1,
 ):
     """
     Compute gradient and backpropagate loss for a batch.
@@ -548,27 +495,24 @@ def interaction_grad(
     :rtype: (torch.Tensor, int, torch.Tensor, int)
     """
 
-    c_map_mag, p_hat, c_map_tensor = predict_cmap_interaction(
+    c_map_mag, p_hat = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
+    
     b = len(n0)
-
+    #z_mix = z_mix.to(p_hat.device)
     if use_cuda:
         y = y.cuda()
     y = Variable(y).float().view(-1)
-    y_hard = y.detach().float().view(-1)
-    # --- make mixup params ONCE (use model method)
-    perm, lam = make_mixup_params(b, alpha=0.3, device=p_hat.device)
-    lam = lam.float().view(-1)  # [B]
-    perm = perm.long()
+    device = y.device
 
-    # --- mix labels
-    y_mix = lam * y + (1.0 - lam) * y[perm]  # [B]]
-    y_mix = y_mix.clamp(0.0, 1.0)
+    
+    # --- smooth labels
+    #y_mix = smooth_labels(y, smoothing=0.1)
 
     # --- BCE (make sure shapes match)
-    p_hat = p_hat.float().view(-1).clamp(1e-6, 1.0 - 1e-6)  # [B]
-    bce_loss = F.binary_cross_entropy(p_hat, y_mix)  # scalar
+    logits = p_hat.view(-1).float()  # rename it logits everywhere
+    bce_loss = F.binary_cross_entropy_with_logits(logits, y) 
 
     if run_tt:
         g_score = []
@@ -589,51 +533,26 @@ def interaction_grad(
         accuracy_loss = bce_loss
 
     representation_loss = torch.mean(c_map_mag)
-
-    # --- prototype pull on map vectors
-    proto_pull_loss = torch.tensor(0.0, device=p_hat.device)
-    if proto_weight > 0:
-        z = c_map_tensor.to(p_hat.device)  # [B,D]
-        if z.dim() != 2 or z.shape[0] != b:
-            raise ValueError(f"Expected c_map_tensor as [B,D], got {tuple(z.shape)}")
-
-        # mix in proto space using SAME perm/lam
-        z_mix = lam[:, None] * z + (1.0 - lam)[:, None] * z[perm]  # [B,D]
-
-        # lazy init prototype buffers
-        D = z.shape[1]
-        if not hasattr(model, "pos_proto_vec"):
-            model.register_buffer("pos_proto_vec", torch.zeros(D, device=p_hat.device))
-            model.register_buffer("neg_proto_vec", torch.zeros(D, device=p_hat.device))
-
-        # EMA update (no grad)
-        ema_update_protos(model, z_mix.detach(), y_mix.detach(), ema=proto_ema)
-
-        # cosine pull loss
-        proto_pull_loss = cosine_proto_pull(
-            z_mix=z_mix,
-            y_mix=y_mix,
-            pos_proto=model.pos_proto_vec,
-            neg_proto=model.neg_proto_vec,
-            neg_weight=proto_neg_weight,
-        )
-
+    
     # --- total loss
     loss = (
         (accuracy_weight * accuracy_loss)
         + ((1.0 - accuracy_weight) * representation_loss)
-        + (proto_weight * proto_pull_loss)
     )
 
     # Backprop Loss
     loss.backward()
 
     with torch.no_grad():
-        p_guess = (p_hat.cpu() > 0.5).float()
-        correct = torch.sum(p_guess == y_hard.cpu()).item()
-        mse = torch.mean((y_hard.cpu() - p_hat.cpu()) ** 2).item()
+        p_prob = torch.sigmoid(logits)
+        p_guess = (p_prob > 0.5).float()
+        correct = (p_guess == y).sum().item()
+        mse = ((y - p_prob) ** 2).mean().item()
+        
+        
+        assert torch.isfinite(logits).all()
 
-    return loss, correct, mse, b
+    return loss.item(), correct, mse, b,p_prob
 
 
 def interaction_eval(
@@ -660,44 +579,47 @@ def interaction_eval(
     :return: (Loss, number correct, mean square error, precision, recall, F1 Score, AUPR)
     :rtype: (torch.Tensor, int, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor)
     """
-    p_hat = []
-    true_y = []
+    p_hat_list = []
+    y_list = []
 
     for n0, n1, y in test_iterator:
-        p_hat.append(
-            predict_interaction(model, n0, n1, tensors, use_cuda, structural_context)
-        )
-        true_y.append(y)
+        # predict_interaction should return logits shaped [B] or [B,1]
+        logits = predict_interaction(model, n0, n1, tensors, use_cuda, structural_context)
+        p_hat_list.append(logits.view(-1))   # force [B]
+        y_list.append(y.view(-1))            # force [B]
 
-    y = torch.cat(true_y, 0)
-    p_hat = torch.cat(p_hat, 0)
+    logits = torch.cat(p_hat_list, dim=0)    # [N]
+    y = torch.cat(y_list, dim=0).float()     # [N]
 
-    device = p_hat.device
+    device = logits.device
     y = y.to(device)
 
-    loss = F.binary_cross_entropy(p_hat.float(), y.float()).item()
-    b = len(y)
+    # --- Loss: logits + targets
+    loss = F.binary_cross_entropy_with_logits(logits, y).item()
 
     with torch.no_grad():
-        p = p_hat.float().view(-1)
-        t = y.float().view(-1)
+        p = torch.sigmoid(logits)            # [N] probabilities
+
         pred = (p > 0.5).float()
-
         correct = (pred == y).sum().item()
-        mse = torch.mean((y.float() - p_hat) ** 2).item()
 
-        tp = torch.sum(pred * t).item()
-        fp = torch.sum(pred * (1 - t)).item()
-        fn = torch.sum((1 - pred) * t).item()
+        # MSE should be on probabilities vs labels (not logits)
+        mse = torch.mean((y - p) ** 2).item()
+
+        tp = torch.sum(pred * y).item()
+        fp = torch.sum(pred * (1 - y)).item()
+        fn = torch.sum((1 - pred) * y).item()
+        
 
         pr = tp / (tp + fp + 1e-8)
         re = tp / (tp + fn + 1e-8)
         f1 = 2 * pr * re / (pr + re + 1e-8)
+        
 
-    y = y.cpu().numpy()
-    p_hat = p_hat.data.cpu().numpy()
-
-    aupr = average_precision(y, p_hat)
+    # --- AUPR: use probs (recommended)
+    y_np = y.detach().cpu().numpy()
+    p_np = p.detach().cpu().numpy()
+    aupr = average_precision(y_np, p_np)
 
     return loss, correct, mse, pr, re, f1, aupr
 
@@ -706,8 +628,6 @@ def train_model(args, output):
     if args.log_wandb:
         run = wandb.init(
             # Set the wandb entity where your project will be logged (generally your team name).
-            name=args.wandb_name,
-            tags=args.wandb_tags,
             entity=args.wandb_entity,
             # Set the wandb project where this run will be logged.
             project=args.wandb_project,
@@ -923,8 +843,14 @@ def train_model(args, output):
     digits = int(np.floor(np.log10(num_epochs))) + 1
     save_prefix = args.save_prefix
 
-    params = [p for p in model.parameters() if p.requires_grad]
-    optim = torch.optim.Adam(params, lr=lr, weight_decay=wd)
+    def lr_lambda(epoch):  
+        return 1.0 if epoch < 2 else 0.1 
+    
+    base_optim = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    optimizer = optim.Lookahead(base_optim, k=5, alpha=0.5)
+
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer.optimizer, lr_lambda)
 
     log(f'Using save prefix "{save_prefix}"', file=output)
     log(f"Training with Adam: lr={lr}, weight_decay={wd}", file=output)
@@ -936,13 +862,23 @@ def train_model(args, output):
 
     batch_report_fmt = "[{}/{}] training {:.1%}: Loss={:.6}, Accuracy={:.3%}, MSE={:.6}"
     epoch_report_fmt = "Finished Epoch {}/{}: Loss={:.6}, Accuracy={:.3%}, MSE={:.6}, Precision={:.6}, Recall={:.6}, F1={:.6}, AUPR={:.6}"
+    
+    
+    best_aupr = float("-inf")
+    best_epoch = -1
+    patience = 3
+    min_delta = 1e-4
+    bad_epochs = 0
 
-    # save model with best aupr to wandb
-    best_aupr = 0.0
-    best_epoch = 0
-    best_model_path = ""
+    best_state_path = None
+    if save_prefix is not None:
+        best_state_path = save_prefix + "_best_state_dict.pt"
 
+    
+  
+    
     N = len(train_iterator) * batch_size
+    
     for epoch in range(num_epochs):
         model.train()
 
@@ -950,10 +886,14 @@ def train_model(args, output):
         loss_accum = 0
         acc_accum = 0
         mse_accum = 0
+        
+      
+
 
         # Train batches
         for z0, z1, y in train_iterator:
-            loss, correct, mse, b = interaction_grad(
+            optimizer.zero_grad(set_to_none=True)
+            loss, correct, mse, b, p_prob = interaction_grad(
                 model,
                 z0,
                 z1,
@@ -979,9 +919,16 @@ def train_model(args, output):
             mse_accum += delta / n
 
             report = (n - b) // 100 < n // 100
+            
 
-            optim.step()
-            optim.zero_grad()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) 
+            optimizer.step()
+            
+           
+            # ✅ 
+            scheduler.step()
+         
+            
             model.clip()
 
             if report:
@@ -994,7 +941,7 @@ def train_model(args, output):
                     mse_accum,
                 ]
                 log(batch_report_fmt.format(*tokens), file=output)
-
+                #log(f"true_pos_rate_accum:{true_pos_rate_accum}, pos_rate_accum:{pos_rate_accum}", file=output)
                 if args.log_wandb:
                     run.log(
                         {
@@ -1007,8 +954,11 @@ def train_model(args, output):
                 output.flush()
 
         model.eval()
+        
 
         with torch.no_grad():
+       
+            
             (
                 inter_loss,
                 inter_correct,
@@ -1018,8 +968,12 @@ def train_model(args, output):
                 inter_f1,
                 inter_aupr,
             ) = interaction_eval(
-                model, test_iterator, embeddings, use_cuda, foldseek3dicontext
+                model, test_iterator, embeddings, use_cuda,foldseek3dicontext
             )
+            
+            
+            
+            
             tokens = [
                 epoch + 1,
                 num_epochs,
@@ -1047,46 +1001,67 @@ def train_model(args, output):
                     }
                 )
 
+            # ---- Early stopping on val AUPR (save only best)
+            val_aupr = float(inter_aupr.item() if hasattr(inter_aupr, "item") else inter_aupr)
+
+            if val_aupr > best_aupr + min_delta:
+                best_aupr = val_aupr
+                best_epoch = epoch + 1
+                bad_epochs = 0
+
+                if best_state_path is not None:
+                    torch.save(model.state_dict(), best_state_path)
+                    log(
+                        f"[BEST] epoch {best_epoch}: val AUPR={best_aupr:.6f} -> saved {best_state_path}",
+                        file=output,
+                    )
+            else:
+                bad_epochs += 1
+                log(
+                    f"[BEST] no improvement (best epoch {best_epoch}, AUPR={best_aupr:.6f}) "
+                    f"bad_epochs={bad_epochs}/{patience}",
+                    file=output,
+                )
+            # # Save the model
+            # if save_prefix is not None:
+            #     save_path = (
+            #         save_prefix + "_epoch" + str(epoch + 1).zfill(digits) + ".sav"
+            #     )
+            #     log(f"Saving model to {save_path}", file=output)
+            #     model.cpu()
+            #     torch.save(model, save_path)
+            #     if use_cuda:
+            #         model.cuda()
+
             output.flush()
 
-            # Save the model
-            if save_prefix is not None:
-                save_path = (
-                    save_prefix + "_epoch" + str(epoch + 1).zfill(digits) + ".sav"
+            if bad_epochs >= patience:
+                log(
+                    f"[EarlyStop] stop at epoch {epoch+1}. best epoch {best_epoch}, best AUPR={best_aupr:.6f}",
+                    file=output,
                 )
-                log(f"Saving model to {save_path}", file=output)
-                model.cpu()
-                torch.save(model, save_path)
-                if use_cuda:
-                    model.cuda()
-                if args.log_wandb and inter_aupr > best_aupr:
-                    best_aupr = inter_aupr
-                    best_epoch = epoch + 1
-                    best_model_path = save_path
+                break
 
-        output.flush()
 
     if save_prefix is not None:
-        save_path = save_prefix + "_final.sav"
-        state_dict_path = save_prefix + "_final_state_dict.sav"
-        log(f"Saving final model to {save_path}", file=output)
-        model.cpu()
-        torch.save(model, save_path)
-        torch.save(model.state_dict(), state_dict_path)
+        # save_path = save_prefix + "_final.sav"
+        # state_dict_path = save_prefix + "_final_state_dict.sav"
+        # log(f"Saving final model to {save_path}", file=output)
+        # model.cpu()
+        # torch.save(model, save_path)
+        # #torch.save(model.state_dict(), state_dict_path)
 
         if args.log_wandb:
-            # Upload trained model as artifact
-            artifact = wandb.Artifact(
-                name="best-trained-model",
-                type="model",
-                description="D-SCRIPT trained interaction model",
-            )
-            artifact.add_file(best_model_path)
-            run.log_artifact(artifact)
-            log(
-                f"Saved model with best AUPR {best_aupr} at epoch {best_epoch} as artifact."
-            )
-            run.finish()
+                # Upload trained model as artifact
+                artifact = wandb.Artifact(
+                    name="trained-model",
+                    type="model",
+                    description="D-SCRIPT trained interaction model",
+                )
+                #artifact.add_file(state_dict_path)
+                artifact.add_file(best_state_path)
+                run.log_artifact(artifact)
+                run.finish()
 
         if use_cuda:
             model.cuda()

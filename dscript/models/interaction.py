@@ -6,7 +6,8 @@ from .contact import ContactCNN
 from .embedding import FullyConnectedEmbed
 
 from dataclasses import dataclass
-
+import torch.nn.functional as F
+import math
 
 @dataclass
 class InteractionInputs:
@@ -93,6 +94,36 @@ class LogisticActivation(nn.Module):
         self.k.data.clamp_(min=0)
 
 
+class PairClassifier2D(nn.Module):
+    def __init__(self, hidden=128, p_drop=0.2):
+        super().__init__()
+        self.feat = nn.Sequential(
+            nn.Conv2d(1, hidden, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(hidden, hidden, 3, padding=1),
+            nn.GELU(),
+        )
+        self.dropout = nn.Dropout(p_drop)
+        self.pre_head_norm = nn.LayerNorm(hidden * 2)
+        self.head = nn.Sequential(
+            nn.Linear(hidden * 2, hidden // 2),
+            nn.GELU(),
+            nn.LayerNorm(hidden // 2),
+            nn.Dropout(p_drop),
+            nn.Linear(hidden // 2, 1),
+        )
+
+    def forward(self, yhat_fused,gamma):
+        tau = 5.0
+        x = (yhat_fused * tau).clamp(-50, 50)
+        K = yhat_fused[0].numel()  
+        phat = (torch.logsumexp(x, dim=(1,2,3)) - math.log(K)) / tau
+
+        
+        return phat
+
+
+
 class ModelInteraction(nn.Module):
     def __init__(
         self,
@@ -155,13 +186,62 @@ class ModelInteraction(nn.Module):
 
         self.clip()
 
-        self.xx = nn.Parameter(torch.arange(2000), requires_grad=False)
+        self.register_buffer("xx", torch.arange(2000))
+
+
         ## added aug
         k = 8
         ## need to adjust after set the dims of foldseek and backbone embedding
         D = self.embedding.nout  # = 100
-        self.g_proj = nn.Linear(D, k)
-        self.yhat_fuse = nn.Conv2d(1 + 2 * k, 1, kernel_size=1, bias=True)
+        h = 64
+        self.seq_bilstm = nn.LSTM(
+            input_size=D,
+            hidden_size=h,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True,
+        )
+       
+        d = 2 * h    # global vector dim after BiLSTM
+        in_dim = 4 * d
+
+        heads = 1  # must divide d; use 2 or 1 if needed
+
+        self.sa0 = nn.MultiheadAttention(embed_dim=d, num_heads=heads, batch_first=True)
+        self.sa1 = nn.MultiheadAttention(embed_dim=d, num_heads=heads, batch_first=True)
+
+        self.ln0_1 = nn.LayerNorm(d)
+        self.ln0_2 = nn.LayerNorm(d)
+        self.ln1_1 = nn.LayerNorm(d)
+        self.ln1_2 = nn.LayerNorm(d)
+
+        self.ff0 = nn.Sequential(nn.Linear(d, 4*d), nn.GELU(), nn.Linear(4*d, d))
+        self.ff1 = nn.Sequential(nn.Linear(d, 4*d), nn.GELU(), nn.Linear(4*d, d))
+
+        # attention pooling heads
+        self.pool0 = nn.Linear(d, 1)
+        self.pool1 = nn.Linear(d, 1)
+
+
+        #prepare for the cls
+        hid = max(64, in_dim // 2)
+
+        self.g_proj = nn.Sequential(
+            nn.Linear(in_dim, hid),
+            nn.GELU(),
+            nn.LayerNorm(hid),      # good for batch=1
+            nn.Linear(hid, k),
+        )
+        in_ch = 1 + k 
+        mid = 32
+        self.yhat_fuse = nn.Sequential(
+            nn.Conv2d(in_ch, mid, kernel_size=1, bias=False),
+            nn.GroupNorm(1, mid),   # stable for batch=1
+            nn.GELU(),
+            nn.Conv2d(mid, 1, kernel_size=1, bias=True),
+        )
+        self.clf = PairClassifier2D(hidden=128, p_drop=0.2)
+
 
     def clip(self):
         """
@@ -171,11 +251,12 @@ class ModelInteraction(nn.Module):
         """
         self.contact.clip()
 
-        if self.do_w:
-            self.theta.data.clamp_(min=0, max=1)
-            self.lambda_.data.clamp_(min=0)
+        with torch.no_grad():
+            if self.do_w:
+                self.theta.clamp_(0, 1)
+                self.lambda_.clamp_(min=0)
 
-        self.gamma.data.clamp_(min=0)
+            self.gamma.clamp_(0,3)
 
     def embed(self, x):
         """
@@ -213,18 +294,42 @@ class ModelInteraction(nn.Module):
             e0 = torch.concat([e0, inputs.b0], dim=2)
             e1 = torch.concat([e1, inputs.b1], dim=2)
 
-        B = self.contact.cmap(e0, e1)
-        C = self.contact.predict(B)
+        Bmap = self.contact.cmap(e0, e1)
+        C = self.contact.predict(Bmap)
         ###added augment
         # print("e0 shape:", e0.shape)
         # print("e1 shape:", e1.shape)
-        p0 = e0.mean(dim=1)
-        p1 = e1.mean(dim=1)
-        int0 = p0 + p1
-        int1 = p0 * p1
+        h0, _ = self.seq_bilstm(e0)   # [1,N,d]
+        h1, _ = self.seq_bilstm(e1)   # [1,M,d]
+
+        # --- self-attention block for seq0
+        x0_attn, _ = self.sa0(h0, h0, h0, need_weights=False)   # [1,N,d]
+        x0 = self.ln0_1(h0 + x0_attn)
+        x0_ff = self.ff0(x0)
+        x0 = self.ln0_2(x0 + x0_ff)                             # [1,N,d]
+
+        # --- self-attention block for seq1
+        x1_attn, _ = self.sa1(h1, h1, h1, need_weights=False)   # [1,M,d]
+        x1 = self.ln1_1(h1 + x1_attn)
+        x1_ff = self.ff1(x1)
+        x1 = self.ln1_2(x1 + x1_ff)                             # [1,M,d]
+
+        # --- attention pooling (learned weighted sum)
+        a0 = self.pool0(x0)                                     # [1,N,1]
+        a1 = self.pool1(x1)                                     # [1,M,1]
+        w0 = torch.softmax(a0, dim=1)                           # [1,N,1]
+        w1 = torch.softmax(a1, dim=1)                           # [1,M,1]
+        p0 = (w0 * x0).sum(dim=1)                               # [1,d]
+        p1 = (w1 * x1).sum(dim=1)                               # [1,d]
+
+        int_add = p0 + p1              # [B,d]
+        int_mul = p0 * p1              # [B,d]
+        int_abs = (p0 - p1).abs()      # [B,d]
+        int_sub = (p0 - p1)            # [B,d]
+
         # print("int0, int1 shape:", int0.shape, int1.shape)
         ### added return int0, int1
-        return C, int0, int1
+        return C, int_add, int_mul, int_abs,int_sub
 
     # TODO: Temporaru overload to allow downstream (post train/evaluate) methods to work.
     def _build_interaction_inputs(
@@ -260,19 +365,20 @@ class ModelInteraction(nn.Module):
             b0=b0,
             b1=b1,
         )
+    def _get_pos_grids(self, B, N, M, *, device, dtype):
+        key = (N, M)
+        if (self._pos_shape != key) or (self._pos_dtype != dtype) or (self._pos_device != device) \
+        or (self._pos_i.numel() == 0):
 
-    def make_mixup_params(self, batch_size: int, alpha: float, device):
-        perm = torch.randperm(batch_size, device=device)
+            ii = torch.arange(N, device=device, dtype=dtype) / max(N - 1, 1)  # [N]
+            jj = torch.arange(M, device=device, dtype=dtype) / max(M - 1, 1)  # [M]
+            self._pos_i = ii.view(1,1,N,1)   # [1,1,N,1]
+            self._pos_j = jj.view(1,1,1,M)   # [1,1,1,M]
+            self._pos_shape = key
+            self._pos_dtype = dtype
+            self._pos_device = device
 
-        # Always return lam tensor (never None)
-        if alpha is None or alpha <= 0 or batch_size <= 1:
-            lam = torch.ones(batch_size, device=device)
-        else:
-            lam = (
-                torch.distributions.Beta(alpha, alpha).sample((batch_size,)).to(device)
-            )
-
-        return perm, lam
+        return self._pos_i.expand(B,1,N,M), self._pos_j.expand(B,1,N,M)
 
     def map_predict(self, *args, **kwargs):
         if len(args) == 1 and isinstance(args[0], InteractionInputs):
@@ -281,7 +387,7 @@ class ModelInteraction(nn.Module):
         if len(args) >= 2:
             cpredInputs = self._build_interaction_inputs(*args, **kwargs)
 
-        C, g_add, g_mul = self.cpred(cpredInputs)
+        C, g_add, g_mul,int_abs,int_sub= self.cpred(cpredInputs)
 
         if self.training and not hasattr(self, "_printed_batch_B"):
             self._printed_batch_B = True
@@ -291,6 +397,8 @@ class ModelInteraction(nn.Module):
         if g_add.ndim == 3:  # [B,1,D]
             g_add = g_add.squeeze(1)
             g_mul = g_mul.squeeze(1)
+            int_abs = int_abs.squeeze(1)
+            int_sub = int_sub.squeeze(1)
 
         if self.do_w:
             N, M = C.shape[2:]
@@ -317,27 +425,18 @@ class ModelInteraction(nn.Module):
         # ---- fuse global interaction into map (BEFORE pooling is usually better)
         B, _, N, M = yhat.shape
 
-        ga = self.g_proj(g_add)  # [B,k]
-        gm = self.g_proj(g_mul)  # [B,k]
+        g = torch.cat([g_add, g_mul,int_abs,int_sub], dim=1)   # [B,2D]
+        gk = self.g_proj(g)                    # [B,k]
 
-        ga_map = ga[:, :, None, None].expand(B, ga.shape[1], N, M)  # [B,k,N,M]
-        gm_map = gm[:, :, None, None].expand(B, gm.shape[1], N, M)  # [B,k,N,M]
+        gk_map = gk[:, :, None, None].expand(B, gk.shape[1], N, M)  # [B,k,N,M]
 
-        yhat_cat = torch.cat([yhat, ga_map, gm_map], dim=1)  # [B,1+2k,N,M]
-        yhat_fused = self.yhat_fuse(yhat_cat)  # [B,1,N,M]
+        yhat_cat = torch.cat([yhat, gk_map], dim=1)        # [B,1+k,N,M]
+        yhat_fused = self.yhat_fuse(yhat_cat)              # [B,1,N,M]
 
-        if self.do_pool:
-            yhat_fused = self.maxPool(yhat_fused)
+        logit= self.clf(yhat_fused, self.gamma)
 
-        # Mean of contact predictions where p_ij > mu + gamma*sigma
-        mu = torch.mean(yhat)
-        sigma = torch.var(yhat)
-        # Q = torch.relu(yhat - mu)
-        Q = torch.relu(yhat - mu - (self.gamma * sigma))
-        phat = torch.sum(Q) / (torch.sum(torch.sign(Q)) + 1)
-        if self.do_sigmoid:
-            phat = self.activation(phat).squeeze()
-        return C, phat
+
+        return yhat_fused, logit
 
     # INTERNAL
     def predict(
@@ -361,7 +460,7 @@ class ModelInteraction(nn.Module):
         :return: Predicted probability of interaction
         :rtype: torch.Tensor, torch.Tensor
         """
-        _, phat = self.map_predict(
+        _, phat= self.map_predict(
             z0,
             z1,
             embed_foldseek=embed_foldseek,

@@ -1,12 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=ex
+#SBATCH --job-name=clean
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --qos=preempt
+#SBATCH --gres=gpu:1
 #SBATCH --constraint="a100-80G"
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
-#SBATCH --time=72:00:00
-#SBATCH --output=logs/%A_bernett_train_ex_%a.out
-#SBATCH --error=logs/%A_bernett_train_ex_%a.err
+#SBATCH --time=96:00:00
+#SBATCH --output=logs/%A_bernett_train_clean_%a.out
+#SBATCH --error=logs/%A_bernett_train_clean_%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 module purge
@@ -20,11 +22,30 @@ export PYTHONNOUSERSITE=1
 PY=/cluster/tufts/ngc/tools/pytorch/2.5.1-cuda12.1-cudnn9/bin/python
 
 
+# import torch_optimizer from conda env
+# export PYTHONPATH=/cluster/tufts/cowenlab/wlou01/condaenv/dscript/lib/python3.11/site-packages:$PYTHONPATH
+DEPS=/cluster/tufts/cowenlab/wlou01/pymoddeps
+#mkdir -p "$DEPS"
+export PYTHONPATH="$DEPS:/cluster/tufts/cowenlab/wlou01/D-SCRIPT:$PYTHONPATH"
 
-export PYTHONPATH=/cluster/tufts/cowenlab/wlou01/condaenv/dscript/lib/python3.11/site-packages:$PYTHONPATH
+# Install missing deps (safe to rerun)
+#$PY -m pip install --upgrade --no-deps --target "$DEPS" protobuf
 
-$PY -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.device_count())"
-$PY -c "import torch_optimizer; print('torch_optimizer OK')"
+$PY - <<'EOF'
+import sys, torch
+import torch_optimizer
+print('torch_optimizer OK')
+ok = torch.cuda.is_available() and torch.cuda.device_count() > 0
+print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())
+sys.exit(0 if ok else 1)
+EOF
+
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: CUDA not available. Exiting."
+    exit 1
+fi
+
 
 
 TOPSY_TURVY=
@@ -36,7 +57,7 @@ EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_ex
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_clean
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
 
@@ -88,20 +109,20 @@ if [ ! -d "${OUTPUT_FOLDER}" ]; then
     mkdir -p "${OUTPUT_FOLDER}"
 fi
 
-$PY -m dscript.commands.train_ex \
+$PY -m dscript.commands.train \
     --train "${TRAIN}" \
     --test "${TEST}" \
     ${EMBEDDING_FLAG} \
     ${EMBEDDING_DIM_FLAG} \
     ${TOPSY_TURVY} \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
-    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_ex" \
+    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_clean" \
     --device "${DEVICE}" \
-    --lr 0.0004 \
+    --lr 0.0005 \
     --lambda 0.05 \
-    --num-epoch 10 \
-    --weight-decay 0.0001 \
-    --batch-size 12 \
+    --num-epoch 20 \
+    --weight-decay 0.001 \
+    --batch-size 32 \
     --pool-width 9 \
     --kernel-width 7 \
     --dropout-p 0.2 \

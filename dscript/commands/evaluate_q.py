@@ -187,8 +187,8 @@ def log_eval_metrics(
     split_name: str = "test",
 ) -> None:
 
-    labels = np.asarray(labels, dtype=np.float32).reshape(-1)
-    phats = np.asarray(phats, dtype=np.float32).reshape(-1)
+    # labels = np.asarray(labels, dtype=np.float32).reshape(-1)
+    # phats = np.asarray(phats, dtype=np.float32).reshape(-1)
 
     n = int(labels.shape[0])
 
@@ -197,16 +197,17 @@ def log_eval_metrics(
         loss = float("nan")
     else:
         logits = torch.from_numpy(phats).float()      # [n]
-        y = torch.from_numpy(labels).float()     # [n]
-        
-        loss = F.binary_cross_entropy_with_logits(logits, y, reduction="mean").item()
+        y = torch.from_numpy(labels).float()
+        loss = float(F.binary_cross_entropy_with_logits(logits, y, reduction="mean").item())
         p_prob = torch.sigmoid(logits).cpu().numpy()
+
     # Other metrics
     if n == 0:
         aupr = auroc = acc = prec = rec = f1 = mse = float("nan")
     else:
         y_true_int = labels.astype(int)
-        y_pred = (p_prob >= threshold).astype(int)
+     
+        y_pred = ( p_prob >= threshold).astype(int)
 
         aupr = float(average_precision_score(y_true_int, p_prob))
         auroc = (
@@ -219,19 +220,23 @@ def log_eval_metrics(
         prec = float(precision_score(y_true_int, y_pred, zero_division=0))
         rec = float(recall_score(y_true_int, y_pred, zero_division=0))
         f1 = float(f1_score(y_true_int, y_pred, zero_division=0))
-        mse = float(mean_squared_error(y_true_int, p_prob))
+        mse = float(mean_squared_error(y_true_int,  p_prob))
 
     with open(out_path_prefix + "_metrics.txt", "w+") as f:
-       
         log(
-            "split,n,threshold,loss,aupr,auroc,accuracy,mse,precision,recall,f1",
+            f"[{split_name}] n: {n}\n"
+            f"[{split_name}] threshold: {threshold}\n"
+            f"[{split_name}] loss: {loss:.6f}\n"
+            f"[{split_name}] AUPR: {aupr:.6f}\n"
+            f"[{split_name}] AUROC: {auroc:.6f}\n"
+            f"[{split_name}] accuracy: {acc:.6f}\n"
+            f"[{split_name}] mse: {mse:.6f}\n"
+            f"[{split_name}] precision: {prec:.6f}\n"
+            f"[{split_name}] recall: {rec:.6f}\n"
+            f"[{split_name}] f1: {f1:.6f}",
             file=f,
         )
-        log(
-            f"{split_name},{n},{threshold:.6f},{loss:.6f},{aupr:.6f},"
-            f"{auroc:.6f},{acc:.6f},{mse:.6f},{prec:.6f},{rec:.6f},{f1:.6f}",
-            file=f,
-        )
+
 
 
 def main(args):
@@ -279,7 +284,7 @@ def main(args):
     # Load Model
     model_path = args.model
     if use_cuda:
-        model = torch.load(model_path).cuda()
+        model = torch.load(model_path, weights_only=False, map_location="cuda")
         model.use_cuda = True
     else:
         model = torch.load(
@@ -333,8 +338,9 @@ def main(args):
 
     model.eval()
     with torch.no_grad():
-        phats = []
+        logits = []
         labels = []
+        probs = []
         for _, (n0, n1, label) in tqdm(
             test_df.iterrows(), total=len(test_df), desc="Predicting pairs"
         ):
@@ -385,27 +391,32 @@ def main(args):
                     b0=b_a,
                     b1=b_b,
                 )
-                _, pred= model.map_predict(interactionInputs)
-                pred = pred.item()
-
-                phats.append(pred)
+                _, logit= model.map_predict(interactionInputs)
+                
+                logit_val = logit.view(-1).float().item()           
+                prob_val  = torch.sigmoid(logit.view(-1).float()).item()
+                
+                logits.append(logit_val)
+                probs.append(prob_val)
                 labels.append(label)
-                outFile.write(f"{n0}\t{n1}\t{label}\t{pred:.5}\n")
+                
+                outFile.write(f"{n0}\t{n1}\t{label}\t{prob_val:.5}\n")
             except Exception as e:
                 sys.stderr.write(f"{n0} x {n1} - {e}")
 
-    phats = np.array(phats)
-    labels = np.array(labels)
+    logits = np.array(logits,dtype=np.float32)
+    labels = np.array(labels, dtype=np.int64)
+    probs = np.array(probs, dtype=np.float32)
 
     log_eval_metrics(
         labels=labels,
-        phats=phats,
+        phats=logits,
         out_path_prefix=outPath,
         threshold=0.5,
         split_name="test",
     )
 
-    plot_eval_predictions(labels, phats, outPath)
+    plot_eval_predictions(labels,probs, outPath)
 
     outFile.close()
 

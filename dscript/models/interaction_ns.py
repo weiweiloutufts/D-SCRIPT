@@ -98,14 +98,14 @@ class PairClassifier2D(nn.Module):
         super().__init__()
         self.feat = nn.Sequential(
             nn.Conv2d(1, hidden, 3, padding=1),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Conv2d(hidden, hidden, 3, padding=1),
-            nn.ReLU(),
+            nn.GELU(),
         )
         self.dropout = nn.Dropout(p_drop)
         self.head = nn.Sequential(
             nn.Linear(hidden * 2, hidden // 2),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(hidden // 2, 1),
         )
 

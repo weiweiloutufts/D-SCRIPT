@@ -345,7 +345,7 @@ class ModelInteraction(nn.Module):
         x = (yhat_fused * tau).clamp(-50, 50)
         
         K = yhat_fused.shape[1] * yhat_fused.shape[2] * yhat_fused.shape[3]#1*N*M
-        phat = (torch.logsumexp(x, dim=(1,2,3)) - math.log(K)) / tau          # [B]
+        phat = (torch.logsumexp(x, dim=(1,2,3)) - math.log(K)) / tau   # [B]
         print("phat min/max:", phat.min().item(), phat.max().item())
         return C, phat
 

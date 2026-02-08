@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=test_bernett
+#SBATCH --job-name=test_human
 #SBATCH -p gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=256G
+#SBATCH --gres=gpu:a100:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=128G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/%A_test_%a.out
 #SBATCH --error=logs/%A_test_%a.err
@@ -12,8 +12,6 @@
 module purge
 module load ngc/1.0
 module load anaconda/2024.10
-#module load pytorch/2.5.1-cuda12.1-cudnn9
-
 
 module purge   
 hash -r
@@ -28,12 +26,12 @@ export PYTHONNOUSERSITE=1
 export PATH="$CONDA_PREFIX/bin:$PATH"
 hash -r
 
-
+ORGS=( ecoli yeast worm mouse fly )
 
 TOPSY_TURVY=
-EMBEDDING_DIR=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
-SEQ_DIR=/cluster/tufts/cowenlab/tt3d+/data/gold_data
-FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
+EMBEDDING_DIR=/cluster/tufts/cowenlab/tt3d+/data/esm2_mapped/
+SEQ_DIR=/cluster/tufts/cowenlab/tt3d+/data/pair_files
+FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/combined_dscript.fasta
 FOLDSEEK_VOCAB=../data/foldseek_vocab.json
 MODEL_PARAMS=""
 DEVICE=0
@@ -74,11 +72,12 @@ OUTPUT_FOLDER=${OUTPUT_FLD}/eval-${OUTPUT_FILE_PREF}
 echo "Output folder: ${OUTPUT_FOLDER}, model: ${MODEL}, DEVICE: ${DEVICE}"
 if [ ! -d ${OUTPUT_FOLDER} ]; then mkdir $OUTPUT_FOLDER; fi
 
-
-EMBEDDING=${EMBEDDING_DIR}
-TEST=${SEQ_DIR}/bernett_test.tsv
-OP_FOLDER_ORG=${OUTPUT_FOLDER}/
-if [ ! -d ${OP_FOLDER_ORG} ]; then mkdir -p ${OP_FOLDER_ORG}; fi
-OP_FILE=${OP_FOLDER_ORG}/${OUTPUT_FILE}
-python -u -m dscript.commands.evaluate_diex5 --model ${MODEL} --embeddings ${EMBEDDING} --test ${TEST} -d $DEVICE -o $OP_FILE
-
+for ORG in ${ORGS[@]}
+do
+    EMBEDDING=${EMBEDDING_DIR}/${ORG}
+    TEST=${SEQ_DIR}/${ORG}_test.tsv
+    OP_FOLDER_ORG=${OUTPUT_FOLDER}/${ORG}
+    if [ ! -d ${OP_FOLDER_ORG} ]; then mkdir -p ${OP_FOLDER_ORG}; fi
+    OP_FILE=${OP_FOLDER_ORG}/${OUTPUT_FILE}
+    python -u -m dscript.commands.evaluate_diex5 --model ${MODEL} --embeddings ${EMBEDDING} --test ${TEST} -d $DEVICE ${MODEL_PARAMS} -o $OP_FILE
+done

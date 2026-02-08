@@ -6,7 +6,7 @@ from .contact import ContactCNN
 from .embedding import FullyConnectedEmbed
 
 from dataclasses import dataclass
-
+import math
 
 @dataclass
 class InteractionInputs:
@@ -94,31 +94,53 @@ class LogisticActivation(nn.Module):
 
 
 class PairClassifier2D(nn.Module):
-    def __init__(self, hidden=256, p_drop=0.2):
+    def __init__(self, hidden=128, p_drop=0.2):
         super().__init__()
         self.feat = nn.Sequential(
             nn.Conv2d(1, hidden, 3, padding=1),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Conv2d(hidden, hidden, 3, padding=1),
-            nn.ReLU(),
+            nn.GELU(),
         )
         self.dropout = nn.Dropout(p_drop)
         self.head = nn.Sequential(
-            nn.Linear(2*hidden, hidden//2),
-            nn.ReLU(),
-            nn.Linear(hidden//2, 1),
+            nn.Linear(hidden * 2, hidden // 2),
+            nn.GELU(),
+            nn.Linear(hidden // 2, 1),
         )
 
-    def forward(self, yhat_fused):
-        x = self.feat(yhat_fused)          # [B,H,N,M]
-        x_mean = x.mean(dim=(2, 3))        # [B,H]
-        x_max  = x.amax(dim=(2, 3))        # [B,H]
-        x = torch.cat([x_mean, x_max], 1)  # [B,2H]
+    def forward(self, yhat_fused,gamma):
+        tau = 5.0
+        x = (yhat_fused * tau).clamp(-50, 50)
+        
+        K = yhat_fused.shape[1] * yhat_fused.shape[2] * yhat_fused.shape[3]
+        phat = (torch.logsumexp(x, dim=(1,2,3)) - math.log(K)) / tau  
+        
+        scale = torch.sigmoid(phat).view(-1,1,1,1)      # (0,1)
+        inp = yhat_fused * (1.0 + scale)                 
+        
+        x = self.feat(inp)  # [B,H,N,M]
 
-        x = self.dropout(x)
-        logit = self.head(x).squeeze(1)    # [B]
-        return logit, x
+        # global pooling -> fixed size regardless of N,M
+        x_mean = x.mean(dim=(2, 3))  # [B,H]
+        x_max = x.amax(dim=(2, 3))  # [B,H]
+        x = torch.cat([x_mean, x_max], dim=1)  # [B,2H]
 
+        # default: no augmentation
+        x_aug = x 
+        lam = None
+        index = None
+
+        if self.training:
+            B = x.size(0)
+            lam = torch.empty(B, 1, device=x.device).uniform_(0.75, 0.95)
+            index = torch.randperm(B, device=x.device)
+            x_aug = lam * x + (1.0 - lam) * x[index]  # [B,2H]
+
+        x_aug = self.dropout(x_aug)
+        logit = self.head(x_aug).squeeze(1)  # [B]
+
+        return logit, x_aug, lam, index
 
 
 class ModelInteraction(nn.Module):
@@ -190,7 +212,7 @@ class ModelInteraction(nn.Module):
         D = self.embedding.nout  # = 100
         self.g_proj = nn.Linear(D, k)
         self.yhat_fuse = nn.Conv2d(1 + 2 * k, 1, kernel_size=1, bias=True)
-        self.clf = PairClassifier2D(hidden=256, p_drop=0.2)
+        self.clf = PairClassifier2D(hidden=128, p_drop=0.2)
 
     def clip(self):
         """
@@ -199,6 +221,7 @@ class ModelInteraction(nn.Module):
         :meta private:
         """
         self.contact.clip()
+
         with torch.no_grad():
             if self.do_w:
                 self.theta.clamp_(0, 1)
@@ -306,10 +329,9 @@ class ModelInteraction(nn.Module):
     def map_predict(self, *args, **kwargs):
         if len(args) == 1 and isinstance(args[0], InteractionInputs):
             cpredInputs = args[0]
-        elif len(args) >= 2:
+
+        if len(args) >= 2:
             cpredInputs = self._build_interaction_inputs(*args, **kwargs)
-        else:
-            raise ValueError("map_predict expects InteractionInputs or (n0,n1,...) args")
 
         C, g_add, g_mul = self.cpred(cpredInputs)
 
@@ -329,8 +351,9 @@ class ModelInteraction(nn.Module):
             xx_N = torch.arange(N, device=device, dtype=C.dtype)
             xx_M = torch.arange(M, device=device, dtype=C.dtype)
 
-            x1 = -torch.square((xx_N + 1 - ((N + 1) / 2)) / (-((N + 1) / 2)))
-            x2 = -torch.square((xx_M + 1 - ((M + 1) / 2)) / (-((M + 1) / 2)))
+            x1 = -1 * torch.square((xx_N + 1 - ((N + 1) / 2)) / (-1 * ((N + 1) / 2)))
+
+            x2 = -1 * torch.square((xx_M + 1 - ((M + 1) / 2)) / (-1 * ((M + 1) / 2)))
 
             x1 = torch.exp(self.lambda_ * x1)
             x2 = torch.exp(self.lambda_ * x2)
@@ -339,10 +362,11 @@ class ModelInteraction(nn.Module):
             W = (1 - self.theta) * W + self.theta
 
             yhat = C * W
+
         else:
             yhat = C
 
-        # fuse global interaction into map
+        # ---- fuse global interaction into map (BEFORE pooling is usually better)
         B, _, N, M = yhat.shape
 
         ga = self.g_proj(g_add)  # [B,k]
@@ -353,10 +377,13 @@ class ModelInteraction(nn.Module):
 
         yhat_cat = torch.cat([yhat, ga_map, gm_map], dim=1)  # [B,1+2k,N,M]
         yhat_fused = self.yhat_fuse(yhat_cat)  # [B,1,N,M]
+        
+        if self.do_pool:
+            yhat_fused = self.maxPool(yhat_fused)
+     
+        logit, z, lam, index = self.clf(yhat_fused,self.gamma)  # [B]
 
-        logit, z = self.clf(yhat_fused)  
-        return C, logit, z
-
+        return C, logit, z,lam, index
 
     # INTERNAL
     def predict(
@@ -380,7 +407,7 @@ class ModelInteraction(nn.Module):
         :return: Predicted probability of interaction
         :rtype: torch.Tensor, torch.Tensor
         """
-        _, phat, _ = self.map_predict(
+        _, phat, _,_, _ = self.map_predict(
             z0,
             z1,
             embed_foldseek=embed_foldseek,

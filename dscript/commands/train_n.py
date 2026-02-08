@@ -357,7 +357,7 @@ def predict_cmap_interaction(
                 b_a = b_a.cuda()
                 b_b = b_b.cuda()
 
-        cm, ph, aug_x = model.map_predict(
+        cm, ph, aug_x,lam, index = model.map_predict(
             InteractionInputs(
                 z_a,
                 z_b,
@@ -375,7 +375,7 @@ def predict_cmap_interaction(
     p_hat = torch.stack(p_hat, 0).view(-1)  # [B]
     c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)  # [B]
     all_aug_x = torch.cat(aug_x_list, dim=0)
-    return c_map_mag, p_hat, all_aug_x
+    return c_map_mag, p_hat, all_aug_x,lam, index
 
 
 # TODO: Remove methods??
@@ -403,7 +403,7 @@ def predict_interaction(
     :param use_cuda: Whether to use GPU
     :type use_cuda: bool
     """
-    _, p_hat, _ = predict_cmap_interaction(
+    _, p_hat, _,lam, index = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     return p_hat
@@ -535,7 +535,7 @@ def interaction_grad(
     :rtype: (torch.Tensor, int, torch.Tensor, int)
     """
 
-    c_map_mag, p_hat, z_mix = predict_cmap_interaction(
+    c_map_mag, p_hat, z_mix,lam, index = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
     b = len(n0)
@@ -544,9 +544,9 @@ def interaction_grad(
         y = y.cuda()
     y = Variable(y).float().view(-1)
 
-
     # --- smooth labels
-    y_mix = smooth_labels(y, smoothing=0.1)
+    y_mix = lam.squeeze(1) * y + (1 - lam.squeeze(1)) * y[index]
+    y_mix = smooth_labels(y_mix, smoothing=0.1)
 
     # --- BCE (make sure shapes match)
     logits = p_hat.view(-1).float()  # rename it logits everywhere
@@ -575,7 +575,7 @@ def interaction_grad(
     # Reconfigure the loss
     representation_loss = representation_loss.detach() * 0.0 
     accuracy_weight = 1.0
-
+    
     # --- prototype pull on map vectors
     proto_pull_loss = torch.tensor(0.0, device=p_hat.device)
     if proto_weight > 0:
@@ -928,8 +928,7 @@ def train_model(args, output):
 
         # Train batches
         for z0, z1, y in train_iterator:
-            optim.zero_grad(set_to_none=True)
-
+            optim.zero_grad()
             loss, correct, mse, b = interaction_grad(
                 model,
                 z0,
@@ -956,10 +955,12 @@ def train_model(args, output):
             mse_accum += delta / n
 
             report = (n - b) // 100 < n // 100
-
+            
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) 
             optim.step()
             model.clip()
+           
+            
 
             if report:
                 tokens = [

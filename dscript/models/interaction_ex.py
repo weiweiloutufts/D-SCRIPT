@@ -6,7 +6,7 @@ from .contact import ContactCNN
 from .embedding import FullyConnectedEmbed
 
 from dataclasses import dataclass
-import torch.nn.functional as F
+
 
 @dataclass
 class InteractionInputs:
@@ -94,61 +94,59 @@ class LogisticActivation(nn.Module):
 
 
 class PairClassifier2D(nn.Module):
-    def __init__(self, p_size, p_drop=0.2,min_dim= 16):
+    def __init__(self, hidden=128, p_drop=0.2):
         super().__init__()
-        self.p_size = p_size
+        self.feat = nn.Sequential(
+            nn.Conv2d(1, hidden, 3, padding=1),
+            nn.GELU(),
+            nn.Conv2d(hidden, hidden, 3, padding=1),
+            nn.GELU(),
+        )
         self.dropout = nn.Dropout(p_drop)
-        self.emb_dim = 2 * p_size * p_size
-        
-        d1 = max(min_dim, self.emb_dim // 8)
-        d2 = max(min_dim, self.emb_dim // 64)
-        d3 = max(min_dim, self.emb_dim // 128)
-        
+        self.pre_head_norm = nn.LayerNorm(hidden * 2)
         self.head = nn.Sequential(
-            nn.Linear(self.emb_dim, d1),
-            nn.ReLU(),
-            nn.LayerNorm(d1),
-            nn.Linear(d1, d2),
-            nn.ReLU(),
-            nn.LayerNorm(d2),
-            nn.Linear(d2, d3),
-            nn.ReLU(),
-            nn.LayerNorm(d3),
-            nn.Linear(d3, 1),  # logit
+            nn.Linear(hidden * 2, hidden // 2),
+            nn.GELU(),
+            nn.LayerNorm(hidden // 2),
+            nn.Dropout(p_drop),
+            nn.Linear(hidden // 2, 1),
         )
 
+
     def forward(self, yhat_fused,gamma):
-        # ---- soft mask from map statistics (per sample)
+        # compute Q from yhat_fused
         mu = yhat_fused.mean(dim=(1,2,3), keepdim=True)   # [B,1,1,1]
-        var = yhat_fused.var(dim=(1, 2, 3), keepdim=True, unbiased=False).clamp_min(1e-6)
-        std = var.sqrt()
-       
-        # change sigma to std
+        sigma = yhat_fused.var(dim=(1,2,3), keepdim=True, unbiased=False).clamp_min(1e-6)
+        std = sigma.sqrt()
+        # [B,1,1,1]
         D = yhat_fused - mu - (gamma * std) 
-        Q = torch.sigmoid(D * 5.0)                                  # [B,1,N,M]
-        
+        temp = 5.0# [B,1,N,M]
+        Q = torch.sigmoid(D * temp)                                  # [B,1,N,M]
         phat = (Q * yhat_fused).sum(dim=(1,2,3)) / (Q.sum(dim=(1,2,3)) + 1e-6)
-        scale = torch.sigmoid(phat).view(-1,1,1,1)      # (0,1)
         
-        x = yhat_fused * (1.0 + scale)                 
+        scale = torch.sigmoid(phat).detach().view(-1,1,1,1)      # (0,1)
+        inp = yhat_fused * (1.0 + 0.5 * scale)                 
         
-        # ---- shrink to fixed p_size x p_size then flatten
-        avg = F.adaptive_avg_pool2d(x, (self.p_size, self.p_size))
-        mx  = F.adaptive_max_pool2d(x, (self.p_size, self.p_size))
-        x_flat = torch.cat([avg, mx], dim=1).flatten(1)   # [B, 2*p*p]
+        x = self.feat(inp)  # [B,H,N,M]
+
+        # global pooling -> fixed size regardless of N,M
+        x_mean = x.mean(dim=(2, 3))  # [B,H]
+        x_max = x.amax(dim=(2, 3))  # [B,H]
+        x = torch.cat([x_mean, x_max], dim=1)  # [B,2H]
 
         # default: no augmentation
-        x_aug = x_flat
+        x_aug = x 
         lam = None
         index = None
 
-        # if self.training:
-        #     B = x_flat.size(0)
-        #     lam = torch.empty(B, 1, device=x_flat.device).uniform_(0.75, 0.95)
-        #     index = torch.randperm(B, device=x_flat.device)
-        #     x_aug = lam * x_flat + (1.0 - lam) * x_flat[index]  # [B,2H]
+        if self.training:
+            B = x.size(0)
+            lam = torch.empty(B, 1, device=x.device).uniform_(0.75, 0.95)
+            index = torch.randperm(B, device=x.device)
+            x_aug = lam * x + (1.0 - lam) * x[index]  # [B,2H]
 
         x_aug = self.dropout(x_aug)
+        x = self.pre_head_norm(x)
         logit = self.head(x_aug).squeeze(1)  # [B]
 
         return logit, x_aug, lam, index
@@ -216,14 +214,16 @@ class ModelInteraction(nn.Module):
 
         self.clip()
 
-        self.xx = nn.Parameter(torch.arange(2000), requires_grad=False)
+        self.register_buffer("xx", torch.arange(2000))
+
+
         ## added aug
         k = 8
         ## need to adjust after set the dims of foldseek and backbone embedding
         D = self.embedding.nout  # = 100
         self.g_proj = nn.Linear(D, k)
         self.yhat_fuse = nn.Conv2d(1 + 2 * k, 1, kernel_size=1, bias=True)
-        self.clf = PairClassifier2D(p_size = 256,p_drop=0.2,min_dim= 16)
+        self.clf = PairClassifier2D(hidden=128, p_drop=0.3)
 
     def clip(self):
         """
@@ -238,7 +238,7 @@ class ModelInteraction(nn.Module):
                 self.theta.clamp_(0, 1)
                 self.lambda_.clamp_(min=0)
 
-            self.gamma.clamp_(min=0)
+            self.gamma.clamp_(0,3)
 
     def embed(self, x):
         """
@@ -385,6 +385,9 @@ class ModelInteraction(nn.Module):
 
         ga_map = ga[:, :, None, None].expand(B, ga.shape[1], N, M)  # [B,k,N,M]
         gm_map = gm[:, :, None, None].expand(B, gm.shape[1], N, M)  # [B,k,N,M]
+        
+        #if self.training:
+         #   yhat = yhat + 0.05 * torch.randn_like(yhat)
 
         yhat_cat = torch.cat([yhat, ga_map, gm_map], dim=1)  # [B,1+2k,N,M]
         yhat_fused = self.yhat_fuse(yhat_cat)  # [B,1,N,M]
@@ -392,9 +395,9 @@ class ModelInteraction(nn.Module):
         if self.do_pool:
             yhat_fused = self.maxPool(yhat_fused)
      
-        phat, z,lam, index = self.clf(yhat_fused,self.gamma)  # [B]
+        logit, z, lam, index = self.clf(yhat_fused,self.gamma)  # [B]
 
-        return C, phat, z,lam, index
+        return C, logit, z,lam, index
 
     # INTERNAL
     def predict(

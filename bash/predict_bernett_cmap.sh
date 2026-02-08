@@ -38,8 +38,8 @@ FOLDSEEK_VOCAB=../data/foldseek_vocab.json
 MODEL_PARAMS=""
 DEVICE=0
 # Set default model here:
-MODEL=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results/bernett_esm2_train_diex5/bernett_diex5_epoch03.sav
-
+#MODEL=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results/bernett_esm2_train_diex5e3/bernett_diex5e3_epoch04.sav
+MODEL=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results/bernett_esm2_no/bernett_ep__epoch06.sav
 usage() {
     echo "USAGE: ./test.sh [-d DEVICE] [-m MODEL] [-T MODEL_TYPE]
 
@@ -69,7 +69,7 @@ done
 OUTPUT_FLD=${MODEL%/*}
 OUTPUT_FILE=${MODEL##*/}
 OUTPUT_FILE_PREF=${OUTPUT_FILE%.*}
-OUTPUT_FOLDER=${OUTPUT_FLD}/eval-${OUTPUT_FILE_PREF}
+OUTPUT_FOLDER=${OUTPUT_FLD}/cmap-${OUTPUT_FILE_PREF}
 
 echo "Output folder: ${OUTPUT_FOLDER}, model: ${MODEL}, DEVICE: ${DEVICE}"
 if [ ! -d ${OUTPUT_FOLDER} ]; then mkdir $OUTPUT_FOLDER; fi
@@ -80,5 +80,5 @@ TEST=${SEQ_DIR}/bernett_test.tsv
 OP_FOLDER_ORG=${OUTPUT_FOLDER}/
 if [ ! -d ${OP_FOLDER_ORG} ]; then mkdir -p ${OP_FOLDER_ORG}; fi
 OP_FILE=${OP_FOLDER_ORG}/${OUTPUT_FILE}
-python -u -m dscript.commands.evaluate_diex5 --model ${MODEL} --embeddings ${EMBEDDING} --test ${TEST} -d $DEVICE -o $OP_FILE
+python -u -m dscript.commands.predict_serial_ori --pairs ${TEST} --model ${MODEL} --embeddings ${EMBEDDING}  -d $DEVICE -o $OP_FILE --store_cmaps
 
