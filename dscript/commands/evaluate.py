@@ -10,7 +10,7 @@ import json
 import sys
 from collections.abc import Callable
 from typing import NamedTuple
-
+import torch.nn.functional as F
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -21,13 +21,24 @@ from sklearn.metrics import (
     precision_recall_curve,
     roc_auc_score,
     roc_curve,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    mean_squared_error,
 )
+import csv
 from tqdm import tqdm
-
+from pathlib import Path
 from dscript.loading import LoadingPool
 
+from dscript.models.interaction_diex5 import InteractionInputs
+
+from ..foldseek import get_foldseek_onehot, build_backbone_vocab
+from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
 from ..fasta import parse_dict
 from ..utils import log
+import h5py
 
 matplotlib.use("Agg")
 
@@ -56,7 +67,9 @@ def add_args(parser):
     )
     parser.add_argument("--test", help="Test Data", required=True)
     parser.add_argument(
-        "--embeddings", help="h5 file with embedded sequences", required=True
+        "--embeddings",
+        help="directory containing per-protein `.pt` embeddings or HDF5 file with embeddings",
+        required=True,
     )
     parser.add_argument("-o", "--outfile", help="Output file to write results")
     parser.add_argument(
@@ -92,6 +105,18 @@ def add_args(parser):
         default=False,
         action="store_true",
         help="If set to true, adds the fold seek embedding after the projection layer",
+    )
+
+    ## Backbone arguments
+    parser.add_argument(
+        "--allow_backbone3di",
+        default=False,
+        action="store_true",
+        help="If set to true, adds the 12 state one-hot representation",
+    )
+    parser.add_argument(
+        "--backbone3di_fasta",
+        help="FASTA file containing the 12 state representation",
     )
 
     return parser
@@ -154,20 +179,63 @@ def plot_eval_predictions(labels, predictions, path="figure"):
     plt.close()
 
 
-def get_foldseek_onehot(n0, size_n0, fold_record, fold_vocab):
-    """
-    fold_record is just a dictionary {ensembl_gene_name => foldseek_sequence}
-    """
-    if n0 in fold_record:
-        fold_seq = fold_record[n0]
-        assert size_n0 == len(fold_seq)
-        foldseek_enc = torch.zeros(size_n0, len(fold_vocab), dtype=torch.float32)
-        for i, a in enumerate(fold_seq):
-            assert a in fold_vocab
-            foldseek_enc[i, fold_vocab[a]] = 1
-        return foldseek_enc
+def log_eval_metrics(
+    labels: np.ndarray,
+    phats: np.ndarray,
+    out_path_prefix: str,
+    threshold: float = 0.5,
+    split_name: str = "test",
+) -> None:
+
+    # labels = np.asarray(labels, dtype=np.float32).reshape(-1)
+    # phats = np.asarray(phats, dtype=np.float32).reshape(-1)
+
+    n = int(labels.shape[0])
+
+    # Loss (BCE over probabilities)
+    if n == 0:
+        loss = float("nan")
     else:
-        return torch.zeros(size_n0, len(fold_vocab), dtype=torch.float32)
+        logits = torch.from_numpy(phats).float()      # [n]
+        y = torch.from_numpy(labels).float()
+        loss = float(F.binary_cross_entropy_with_logits(logits, y, reduction="mean").item())
+        p_prob = torch.sigmoid(logits).cpu().numpy()
+
+    # Other metrics
+    if n == 0:
+        aupr = auroc = acc = prec = rec = f1 = mse = float("nan")
+    else:
+        y_true_int = labels.astype(int)
+     
+        y_pred = ( p_prob >= threshold).astype(int)
+
+        aupr = float(average_precision_score(y_true_int, p_prob))
+        auroc = (
+            float(roc_auc_score(y_true_int, p_prob))
+            if len(np.unique(y_true_int)) > 1
+            else float("nan")
+        )
+
+        acc = float(accuracy_score(y_true_int, y_pred))
+        prec = float(precision_score(y_true_int, y_pred, zero_division=0))
+        rec = float(recall_score(y_true_int, y_pred, zero_division=0))
+        f1 = float(f1_score(y_true_int, y_pred, zero_division=0))
+        mse = float(mean_squared_error(y_true_int,  p_prob))
+
+    with open(out_path_prefix + "_metrics.txt", "w+") as f:
+        log(
+            f"[{split_name}] n: {n}\n"
+            f"[{split_name}] threshold: {threshold}\n"
+            f"[{split_name}] loss: {loss:.6f}\n"
+            f"[{split_name}] AUPR: {aupr:.6f}\n"
+            f"[{split_name}] AUROC: {auroc:.6f}\n"
+            f"[{split_name}] accuracy: {acc:.6f}\n"
+            f"[{split_name}] mse: {mse:.6f}\n"
+            f"[{split_name}] precision: {prec:.6f}\n"
+            f"[{split_name}] recall: {rec:.6f}\n"
+            f"[{split_name}] f1: {f1:.6f}",
+            file=f,
+        )
 
 
 def main(args):
@@ -176,11 +244,10 @@ def main(args):
 
     :meta private:
     """
-    ########## Foldseek code #########################3
+    ########## Foldseek code #########################
     allow_foldseek = args.allow_foldseek
     fold_fasta_file = args.foldseek_fasta
     fold_vocab_file = args.foldseek_vocab
-    add_first = not args.add_foldseek_after_projection
     fold_record = {}
     fold_vocab = None
     if allow_foldseek:
@@ -190,6 +257,18 @@ def main(args):
             fold_record[rec_k] = rec_v
         with open(fold_vocab_file) as fv:
             fold_vocab = json.load(fv)
+    ########## Backbone code #########################
+    allow_backbone = args.allow_backbone3di
+    backbone_fasta_file = args.backbone3di_fasta
+    backbone_record = {}
+    backbone_vocab = None
+    if allow_backbone:
+        assert backbone_fasta is not None
+        backbone_fasta = parse_dict(backbone_fasta_file)
+        for rec_k, rec_v in backbone_fasta.items():
+            backbone_record[rec_k] = rec_v
+        backbone_vocab = build_backbone_vocab()
+
     ##################################################
 
     # Set Device
@@ -204,7 +283,7 @@ def main(args):
     # Load Model
     model_path = args.model
     if use_cuda:
-        model = torch.load(model_path).cuda()
+        model = torch.load(model_path, weights_only=False, map_location="cuda")
         model.use_cuda = True
     else:
         model = torch.load(
@@ -212,10 +291,26 @@ def main(args):
         ).cpu()
         model.use_cuda = False
 
-    embPath = args.embeddings
+    emb_path = Path(args.embeddings)
+
+    if emb_path.is_dir():
+        embedding_mode = "pt_dir"
+        log(f"Embedding path is a directory: {emb_path}")
+    elif emb_path.is_file():
+        # Could be HDF5 or something else
+        if h5py.is_hdf5(str(emb_path)):
+            embedding_mode = "hdf5"
+            log(f"Embedding path is an HDF5 file: {emb_path}")
+        else:
+            raise ValueError(
+                f"Embedding file is not HDF5 and not a directory: {emb_path}"
+            )
+    else:
+        raise FileNotFoundError(f"Embedding path does not exist: {emb_path}")
 
     # Load Pairs
     test_fi = args.test
+
     test_df = pd.read_csv(test_fi, sep="\t", header=None)
 
     if args.outfile is None:
@@ -225,68 +320,102 @@ def main(args):
     outFile = open(outPath + ".predictions.tsv", "w+")
 
     allProteins = sorted(list(set(test_df[0]).union(test_df[1])))
-    loadpool = LoadingPool(embPath, n_jobs=args.load_proc)
-    embeddings = loadpool.load(allProteins)
+
+    # Load embeddings
+    embeddings: dict[str, torch.Tensor] = {}
+    if embedding_mode == "pt_dir":
+        embedding_loader = EmbeddingLoader(
+            embedding_dir_name=emb_path, protein_names=allProteins, num_workers=4
+        )
+        embeddings = embedding_loader.embeddings_cpu
+    elif embedding_mode == "hdf5":
+        with h5py.File(emb_path, "r") as h5fi:
+            for prot_name in tqdm(allProteins, desc="Loading HDF5 embeddings"):
+                embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
+
+    # Evaluate
 
     model.eval()
     with torch.no_grad():
-        phats = []
+        logits = []
         labels = []
+        probs = []
         for _, (n0, n1, label) in tqdm(
             test_df.iterrows(), total=len(test_df), desc="Predicting pairs"
         ):
             try:
-                i0 = allProteins.index(n0)
-                i1 = allProteins.index(n1)
-                if i0 < 0 or i1 < 0:
-                    raise ValueError(f"Protein {n0} or {n1} not found in embeddings")
-                p0 = embeddings[i0]
-                p1 = embeddings[i1]
+
+                p0 = embeddings[n0]
+                p1 = embeddings[n1]
+
+                # Ensure 3D [B, L, D]
+                p0 = add_batch_dim_if_needed(p0)
+                p1 = add_batch_dim_if_needed(p1)
 
                 if use_cuda:
                     p0 = p0.cuda()
                     p1 = p1.cuda()
 
-                if allow_foldseek:
-                    f_a = get_foldseek_onehot(
-                        n0, p0.shape[1], fold_record, fold_vocab
-                    ).unsqueeze(0)
-                    f_b = get_foldseek_onehot(
-                        n1, p1.shape[1], fold_record, fold_vocab
-                    ).unsqueeze(0)
+                f_a = f_b = b_a = b_b = None
 
+                def build_struct_embedding(n, length, record, vocab):
+                    e = get_foldseek_onehot(n, length, record, vocab).unsqueeze(0)
                     if use_cuda:
-                        f_a = f_a.cuda()
-                        f_b = f_b.cuda()
+                        e = e.cuda()
+                    return e
 
-                    if add_first:
-                        p0 = torch.concat([p0, f_a], dim=2)
-                        p1 = torch.concat([p0, f_a], dim=2)
+                if allow_foldseek:
+                    f_a = build_struct_embedding(
+                        n0, p0.shape[1], fold_record, fold_vocab
+                    )
+                    f_b = build_struct_embedding(
+                        n1, p1.shape[1], fold_record, fold_vocab
+                    )
 
-                if allow_foldseek and (not add_first):
-                    _, pred = model.map_predict(p0, p1, True, f_a, f_b)
-                    pred = pred.item()
-                else:
-                    _, pred = model.map_predict(p0, p1)
-                    pred = pred.item()
+                if allow_backbone:
+                    b_a = build_struct_embedding(
+                        n0, p0.shape[1], backbone_record, backbone_vocab
+                    )
+                    b_b = build_struct_embedding(
+                        n1, p1.shape[1], backbone_record, backbone_vocab
+                    )
 
-                phats.append(pred)
+                interactionInputs = InteractionInputs(
+                    p0,
+                    p1,
+                    embed_foldseek=allow_foldseek,
+                    f0=f_a,
+                    f1=f_b,
+                    embed_backbone=allow_backbone,
+                    b0=b_a,
+                    b1=b_b,
+                )
+                _, logit= model.map_predict(interactionInputs)
+                
+                logit_val = logit.view(-1).float().item()           
+                prob_val  = torch.sigmoid(logit.view(-1).float()).item()
+                
+                logits.append(logit_val)
+                probs.append(prob_val)
                 labels.append(label)
-                outFile.write(f"{n0}\t{n1}\t{label}\t{pred:.5}\n")
+                
+                outFile.write(f"{n0}\t{n1}\t{label}\t{prob_val:.5}\n")
             except Exception as e:
                 sys.stderr.write(f"{n0} x {n1} - {e}")
 
-    phats = np.array(phats)
-    labels = np.array(labels)
+    logits = np.array(logits,dtype=np.float32)
+    labels = np.array(labels, dtype=np.int64)
+    probs = np.array(probs, dtype=np.float32)
 
-    with open(outPath + "_metrics.txt", "w+") as f:
-        aupr = average_precision_score(labels, phats)
-        auroc = roc_auc_score(labels, phats)
+    log_eval_metrics(
+        labels=labels,
+        phats=logits,
+        out_path_prefix=outPath,
+        threshold=0.5,
+        split_name="test",
+    )
 
-        log(f"AUPR: {aupr}", file=f)
-        log(f"AUROC: {auroc}", file=f)
-
-    plot_eval_predictions(labels, phats, outPath)
+    plot_eval_predictions(labels,probs, outPath)
 
     outFile.close()
 

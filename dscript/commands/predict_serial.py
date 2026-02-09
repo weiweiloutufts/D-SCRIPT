@@ -16,12 +16,13 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
+from pathlib import Path
 from ..fasta import parse
 from ..foldseek import fold_vocab, get_foldseek_onehot
 from ..language_model import lm_embed
-from ..models.interaction import DSCRIPTModel
+from ..models.interaction_diex5 import DSCRIPTModel
 from ..utils import load_hdf5_parallel, log
-
+from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
 
 class PredictionArguments(NamedTuple):
     cmd: str
@@ -126,7 +127,9 @@ def main(args):
 
     # Set Device
     use_cuda = (
-        (device >= 0) and torch.cuda.is_available() and device < torch.cuda.device_count()
+        (device >= 0)
+        and torch.cuda.is_available()
+        and device < torch.cuda.device_count()
     )
     if use_cuda:
         torch.cuda.set_device(device)
@@ -143,7 +146,7 @@ def main(args):
     if modelPath.endswith(".sav") or modelPath.endswith(".pt"):
         try:
             if use_cuda:
-                model = torch.load(modelPath).cuda()
+                model = torch.load(modelPath, weights_only=False, map_location="cuda")
                 model.use_cuda = True
             else:
                 model = torch.load(
@@ -206,11 +209,45 @@ def main(args):
         for n in tqdm(all_prots):
             embeddings[n] = lm_embed(seqDict[n], use_cuda)
     else:
-        log("Loading Embeddings...", file=logFile, print_also=True)
-        embeddings = load_hdf5_parallel(
-            embPath, all_prots, n_jobs=args.load_proc
-        )  # Is a dict, legacy behavior
+        emb_path = Path(args.embeddings)
 
+        if emb_path.is_dir():
+            embedding_mode = "pt_dir"
+            log(f"Embedding path is a directory: {emb_path}")
+        elif emb_path.is_file():
+            # Could be HDF5 or something else
+            if h5py.is_hdf5(str(emb_path)):
+                embedding_mode = "hdf5"
+                log(f"Embedding path is an HDF5 file: {emb_path}")
+            else:
+                raise ValueError(
+                    f"Embedding file is not HDF5 and not a directory: {emb_path}"
+                )
+        else:
+            raise FileNotFoundError(f"Embedding path does not exist: {emb_path}")
+
+        embeddings: dict[str, torch.Tensor] = {}
+        
+        # log("Loading Embeddings...", file=logFile, print_also=True)
+        # embeddings = load_hdf5_parallel(
+        #     embPath, all_prots, n_jobs=args.load_proc
+        # )  # Is a dict, legacy behavior
+
+         # Load embeddings
+        embeddings: dict[str, torch.Tensor] = {}
+        if embedding_mode == "pt_dir":
+            embedding_loader = EmbeddingLoader(
+                embedding_dir_name=emb_path, protein_names=all_prots, num_workers=4
+            )
+            embeddings = embedding_loader.embeddings_cpu
+        elif embedding_mode == "hdf5":
+            with h5py.File(emb_path, "r") as h5fi:
+                for prot_name in tqdm(all_prots, desc="Loading HDF5 embeddings"):
+                    embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
+
+        
+        
+        
     # Load Foldseek Sequences
     if foldseek_fasta is not None:
         log("Loading FoldSeek 3Di sequences...", file=logFile, print_also=True)
@@ -237,14 +274,22 @@ def main(args):
     with open(outPathAll, "w+") as f:
         with open(outPathPos, "w+") as pos_f:
             with torch.no_grad():
+                logits = []
+                labels = []
+                probs = []
                 for _, (n0, n1) in tqdm(pairs.iloc[:, :2].iterrows(), total=len(pairs)):
-                    n0 = str(n0)
-                    n1 = str(n1)
+                    # n0 = str(n0)
+                    # n1 = str(n1)
                     if n % 50 == 0:
                         f.flush()
                     n += 1
+                    
                     p0 = embeddings[n0]
                     p1 = embeddings[n1]
+                    
+                    # Ensure 3D [B, L, D]
+                    p0 = add_batch_dim_if_needed(p0)
+                    p1 = add_batch_dim_if_needed(p1)
 
                     if use_cuda:
                         p0 = p0.cuda()
@@ -265,7 +310,7 @@ def main(args):
                     try:
                         if foldseek_fasta is not None:
                             try:
-                                cm, p = model.map_predict(p0, p1, True, fs0, fs1)
+                                cm, logit = model.map_predict(p0, p1, True, fs0, fs1)
                             except TypeError as e:
                                 log(e)
                                 log(
@@ -273,11 +318,15 @@ def main(args):
                                 )
                                 raise e
                         else:
-                            cm, p = model.map_predict(p0, p1)
-                        p = p.item()
-                        f.write(f"{n0}\t{n1}\t{p}\n")
-                        if p >= threshold:
-                            pos_f.write(f"{n0}\t{n1}\t{p}\n")
+                            cm, logit = model.map_predict(p0, p1)
+                        
+                        # p = p.item()
+                             
+                        prob_val  = torch.sigmoid(logit.view(-1).float()).item()
+                        
+                        f.write(f"{n0}\t{n1}\t{prob_val}\n")
+                        if prob_val >= threshold:
+                            pos_f.write(f"{n0}\t{n1}\t{prob_val}\n")
                             if args.store_cmaps:
                                 cm_np = cm.squeeze().cpu().numpy()
                                 dset = cmap_file.require_dataset(

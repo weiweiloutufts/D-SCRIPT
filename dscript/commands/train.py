@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import NamedTuple
 
 import h5py
@@ -14,17 +15,26 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
+import wandb
 from sklearn.metrics import average_precision_score as average_precision
 from torch.autograd import Variable
 from tqdm import tqdm
+import os
+import torch_optimizer as optim
 
 from .. import __version__
 from ..fasta import parse_dict
-from ..foldseek import fold_vocab, get_foldseek_onehot
+from ..foldseek import (
+    Foldseek3diContext,
+    build_backbone_vocab,
+    fold_vocab,
+    get_foldseek_onehot,
+)
 from ..glider import glide_compute_map, glider_score
 from ..models.contact import ContactCNN
 from ..models.embedding import FullyConnectedEmbed
-from ..models.interaction import ModelInteraction
+from ..models.interaction import InteractionInputs, ModelInteraction
+from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
 from ..utils import (
     PairedDataset,
     collate_paired_sequences,
@@ -83,10 +93,11 @@ def add_args(parser):
     data_grp.add_argument(
         "--test", required=True, help="list of validation/testing pairs"
     )
+    # Embedding Directory
     data_grp.add_argument(
         "--embedding",
         required=True,
-        help="h5py path containing embedded sequences",
+        help="directory containing per-protein `.pt` embeddings or HDF5 file with embeddings",
     )
     data_grp.add_argument(
         "--no-augment",
@@ -98,8 +109,8 @@ def add_args(parser):
     proj_grp.add_argument(
         "--input-dim",
         type=int,
-        default=6165,
-        help="dimension of input language model embedding (per amino acid) (default: 6165)",
+        default=1280,
+        help="dimension of input language model embedding (per amino acid) (default: 1280), ESM-2 650M: 1280;ESM-C 600M: 1152",
     )
     proj_grp.add_argument(
         "--projection-dim",
@@ -213,8 +224,19 @@ def add_args(parser):
     misc_grp.add_argument(
         "-d", "--device", type=int, default=-1, help="compute device to use"
     )
-    misc_grp.add_argument("--checkpoint", help="checkpoint model to start training from")
+    misc_grp.add_argument(
+        "--checkpoint", help="checkpoint model to start training from"
+    )
     misc_grp.add_argument("--seed", help="Set random seed", type=int)
+    misc_grp.add_argument(
+        "--log_wandb", action="store_true", help="Log metrics to Weights and Biases"
+    )
+    misc_grp.add_argument(
+        "--wandb-entity", default=None, help="Weights and Biases entity name"
+    )
+    misc_grp.add_argument(
+        "--wandb-project", default=None, help="Weights and Biases project name"
+    )
 
     ## Foldseek arguments
     foldseek_grp.add_argument(
@@ -227,9 +249,16 @@ def add_args(parser):
         "--foldseek_fasta",
         help="foldseek fasta file containing the foldseek representation",
     )
-    # foldseek_grp.add_argument(
-    #     "--add_foldseek_after_projection", default = False, action = "store_true", help = "If set to true, adds the fold seek embedding after the projection layer"
-    # )
+    foldseek_grp.add_argument(
+        "--allow_backbone3di",
+        default=False,
+        action="store_true",
+        help="If set to true, adds the 12 state one-hot representation",
+    )
+    foldseek_grp.add_argument(
+        "--backbone3di_fasta",
+        help="FASTA file containing the 12 state representation",
+    )
 
     return parser
 
@@ -241,10 +270,7 @@ def predict_cmap_interaction(
     tensors,
     use_cuda,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None,
     ###
 ):
     """
@@ -265,20 +291,42 @@ def predict_cmap_interaction(
     b = len(n0)
 
     p_hat = []
+    #aug_x_list = []
     c_map_mag = []
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
         z_b = tensors[n1[i]]
+
+        # Ensure 3D [B, L, D]
+        z_a = add_batch_dim_if_needed(z_a)
+        z_b = add_batch_dim_if_needed(z_b)
+
         if use_cuda:
             z_a = z_a.cuda()
             z_b = z_b.cuda()
-        if allow_foldseek:
-            assert fold_record is not None and fold_vocab is not None
+
+        # foldseek and backbone vectors
+        f_a = f_b = b_a = b_b = None
+
+        # TODO: make better
+        if structural_context.allow_foldseek:
+            assert (
+                structural_context.fold_record is not None
+                and structural_context.fold_vocab is not None
+            )
             f_a = get_foldseek_onehot(
-                n0[i], z_a.shape[1], fold_record, fold_vocab
-            ).unsqueeze(0)  # seqlen x vocabsize
+                n0[i],
+                z_a.shape[1],
+                structural_context.fold_record,
+                structural_context.fold_vocab,
+            ).unsqueeze(
+                0
+            )  # seqlen x vocabsize
             f_b = get_foldseek_onehot(
-                n1[i], z_b.shape[1], fold_record, fold_vocab
+                n1[i],
+                z_b.shape[1],
+                structural_context.fold_record,
+                structural_context.fold_vocab,
             ).unsqueeze(0)
 
             ## check if cuda
@@ -286,21 +334,55 @@ def predict_cmap_interaction(
                 f_a = f_a.cuda()
                 f_b = f_b.cuda()
 
-            if add_first:
-                z_a = torch.concat([z_a, f_a], dim=2)
-                z_b = torch.concat([z_b, f_b], dim=2)
+        if structural_context.allow_backbone3di:
+            assert (
+                structural_context.backbone_record is not None
+                and structural_context.fold_vocab is not None
+            )
+            b_a = get_foldseek_onehot(
+                n0[i],
+                z_a.shape[1],
+                structural_context.backbone_record,
+                structural_context.backbone_vocab,
+            ).unsqueeze(
+                0
+            )  # seqlen x vocabsize
+            b_b = get_foldseek_onehot(
+                n1[i],
+                z_b.shape[1],
+                structural_context.backbone_record,
+                structural_context.backbone_vocab,
+            ).unsqueeze(0)
 
-        if allow_foldseek and (not add_first):
-            cm, ph = model.map_predict(z_a, z_b, True, f_a, f_b)
-        else:
-            cm, ph = model.map_predict(z_a, z_b)
+            ## check if cuda
+            if use_cuda:
+                b_a = b_a.cuda()
+                b_b = b_b.cuda()
+
+        cm, ph = model.map_predict(
+            InteractionInputs(
+                z_a,
+                z_b,
+                embed_foldseek=structural_context.allow_foldseek,
+                f0=f_a,
+                f1=f_b,
+                embed_backbone=structural_context.allow_backbone3di,
+                b0=b_a,
+                b1=b_b,
+            )
+        )
         p_hat.append(ph)
         c_map_mag.append(torch.mean(cm))
-    p_hat = torch.stack(p_hat, 0)
-    c_map_mag = torch.stack(c_map_mag, 0)
+     #   aug_x_list.append(aug_x.detach().cpu())
+    p_hat = torch.stack(p_hat, 0).view(-1)  # [B]
+    c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)  # [B]
+    #all_aug_x = torch.cat(aug_x_list, dim=0)
+    
+  
     return c_map_mag, p_hat
 
 
+# TODO: Remove methods??
 def predict_interaction(
     model,
     n0,
@@ -308,10 +390,7 @@ def predict_interaction(
     tensors,
     use_cuda,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None,
     ###
 ):
     """
@@ -329,17 +408,41 @@ def predict_interaction(
     :type use_cuda: bool
     """
     _, p_hat = predict_cmap_interaction(
-        model,
-        n0,
-        n1,
-        tensors,
-        use_cuda,
-        allow_foldseek,
-        fold_record,
-        fold_vocab,
-        add_first,
+        model, n0, n1, tensors, use_cuda, structural_context
     )
     return p_hat
+
+
+def make_mixup_params(batch_size: int, alpha: float, device):
+    """
+    Returns:
+      perm: [B] LongTensor, random permutation indices
+      lam:  [B] FloatTensor, mixing weights in [0,1]
+    """
+    perm = torch.randperm(batch_size, device=device)
+
+    if alpha is None or alpha <= 0 or batch_size <= 1:
+        lam = torch.ones(batch_size, device=device)
+    else:
+        lam = torch.distributions.Beta(alpha, alpha).sample((batch_size,)).to(device)
+
+    return perm, lam
+
+
+def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e-8):
+    z_n = F.normalize(z_mix, p=2, dim=1, eps=eps)
+    pos_n = F.normalize(pos_proto, p=2, dim=0, eps=eps)
+    neg_n = F.normalize(neg_proto, p=2, dim=0, eps=eps)
+
+    d_pos = 1.0 - (z_n * pos_n[None, :]).sum(dim=1)
+    d_neg = 1.0 - (z_n * neg_n[None, :]).sum(dim=1)
+
+    w = y_mix.clamp(0.0, 1.0)
+    return (w * d_pos + neg_weight * (1.0 - w) * d_neg).mean()
+
+
+def smooth_labels(labels, smoothing=0.1):
+    return labels * (1 - smoothing) + 0.5 * smoothing
 
 
 def interaction_grad(
@@ -355,11 +458,7 @@ def interaction_grad(
     glider_mat=None,
     use_cuda=True,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
-    ###
+    structural_context=None,
 ):
     """
     Compute gradient and backpropagate loss for a batch.
@@ -392,23 +491,23 @@ def interaction_grad(
     """
 
     c_map_mag, p_hat = predict_cmap_interaction(
-        model,
-        n0,
-        n1,
-        tensors,
-        use_cuda,
-        allow_foldseek,
-        fold_record,
-        fold_vocab,
-        add_first,
+        model, n0, n1, tensors, use_cuda, structural_context
     )
-
+    
+    b = len(n0)
+    #z_mix = z_mix.to(p_hat.device)
     if use_cuda:
         y = y.cuda()
-    y = Variable(y)
+    y = Variable(y).float().view(-1)
+    device = y.device
 
-    p_hat = p_hat.float()
-    bce_loss = F.binary_cross_entropy(p_hat.float(), y.float())
+    
+    # --- smooth labels
+    #y_mix = smooth_labels(y, smoothing=0.1)
+
+    # --- BCE (make sure shapes match)
+    logits = p_hat.view(-1).float()  # rename it logits everywhere
+    bce_loss = F.binary_cross_entropy_with_logits(logits, y) 
 
     if run_tt:
         g_score = []
@@ -428,30 +527,28 @@ def interaction_grad(
     else:
         accuracy_loss = bce_loss
 
-    representation_loss = torch.mean(c_map_mag)
-    loss = (accuracy_weight * accuracy_loss) + (
-        (1 - accuracy_weight) * representation_loss
+    
+    #representation_loss = torch.mean(c_map_mag)
+    representation_loss = c_map_mag.pow(2).mean()
+    # --- total loss
+    loss = (
+        (accuracy_weight * accuracy_loss)
+        + ((1.0 - accuracy_weight) * representation_loss)
     )
-    b = len(p_hat)
 
     # Backprop Loss
     loss.backward()
 
-    if use_cuda:
-        y = y.cpu()
-        p_hat = p_hat.cpu()
-        if run_tt:
-            g_score = g_score.cpu()
-
     with torch.no_grad():
-        guess_cutoff = 0.5
-        p_hat = p_hat.float()
-        p_guess = (guess_cutoff * torch.ones(b) < p_hat).float()
-        y = y.float()
-        correct = torch.sum(p_guess == y).item()
-        mse = torch.mean((y.float() - p_hat) ** 2).item()
+        p_prob = torch.sigmoid(logits)
+        p_guess = (p_prob > 0.5).float()
+        correct = (p_guess == y).sum().item()
+        mse = ((y - p_prob) ** 2).mean().item()
+        
+        
+        assert torch.isfinite(logits).all()
 
-    return loss, correct, mse, b
+    return loss.item(), correct, mse, b,p_prob
 
 
 def interaction_eval(
@@ -460,10 +557,7 @@ def interaction_eval(
     tensors,
     use_cuda,
     ### Foldseek added here
-    allow_foldseek=False,
-    fold_record=None,
-    fold_vocab=None,
-    add_first=True,
+    structural_context=None,
     ###
 ):
     """
@@ -481,58 +575,62 @@ def interaction_eval(
     :return: (Loss, number correct, mean square error, precision, recall, F1 Score, AUPR)
     :rtype: (torch.Tensor, int, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor)
     """
-    p_hat = []
-    true_y = []
+    p_hat_list = []
+    y_list = []
 
     for n0, n1, y in test_iterator:
-        p_hat.append(
-            predict_interaction(
-                model,
-                n0,
-                n1,
-                tensors,
-                use_cuda,
-                allow_foldseek,
-                fold_record,
-                fold_vocab,
-                add_first,
-            )
-        )
-        true_y.append(y)
+        # predict_interaction should return logits shaped [B] or [B,1]
+        logits = predict_interaction(model, n0, n1, tensors, use_cuda, structural_context)
+        p_hat_list.append(logits.view(-1))   # force [B]
+        y_list.append(y.view(-1))            # force [B]
 
-    y = torch.cat(true_y, 0)
-    p_hat = torch.cat(p_hat, 0)
+    logits = torch.cat(p_hat_list, dim=0)    # [N]
+    y = torch.cat(y_list, dim=0).float()     # [N]
 
-    if use_cuda:
-        y.cuda()
-        p_hat = torch.Tensor([x.cuda() for x in p_hat])
-        p_hat.cuda()
+    device = logits.device
+    y = y.to(device)
 
-    loss = F.binary_cross_entropy(p_hat.float(), y.float()).item()
-    b = len(y)
+    # --- Loss: logits + targets
+    loss = F.binary_cross_entropy_with_logits(logits, y).item()
 
     with torch.no_grad():
-        guess_cutoff = torch.Tensor([0.5]).float()
-        p_hat = p_hat.float()
-        y = y.float()
-        p_guess = (guess_cutoff * torch.ones(b) < p_hat).float()
-        correct = torch.sum(p_guess == y).item()
-        mse = torch.mean((y.float() - p_hat) ** 2).item()
+        p = torch.sigmoid(logits)            # [N] probabilities
 
-        tp = torch.sum(y * p_hat).item()
-        pr = tp / torch.sum(p_hat).item()
-        re = tp / torch.sum(y).item()
-        f1 = 2 * pr * re / (pr + re)
+        pred = (p > 0.5).float()
+        correct = (pred == y).sum().item()
 
-    y = y.cpu().numpy()
-    p_hat = p_hat.data.cpu().numpy()
+        # MSE should be on probabilities vs labels (not logits)
+        mse = torch.mean((y - p) ** 2).item()
 
-    aupr = average_precision(y, p_hat)
+        tp = torch.sum(pred * y).item()
+        fp = torch.sum(pred * (1 - y)).item()
+        fn = torch.sum((1 - pred) * y).item()
+        
+
+        pr = tp / (tp + fp + 1e-8)
+        re = tp / (tp + fn + 1e-8)
+        f1 = 2 * pr * re / (pr + re + 1e-8)
+        
+
+    # --- AUPR: use probs (recommended)
+    y_np = y.detach().cpu().numpy()
+    p_np = p.detach().cpu().numpy()
+    aupr = average_precision(y_np, p_np)
 
     return loss, correct, mse, pr, re, f1, aupr
 
 
 def train_model(args, output):
+    if args.log_wandb:
+        run = wandb.init(
+            # Set the wandb entity where your project will be logged (generally your team name).
+            entity=args.wandb_entity,
+            # Set the wandb project where this run will be logged.
+            project=args.wandb_project,
+            # Track hyperparameters and run metadata.
+            config=vars(args),
+        )
+
     # Create data sets
     batch_size = args.batch_size
     use_cuda = (args.device > -1) and torch.cuda.is_available()
@@ -540,20 +638,50 @@ def train_model(args, output):
     test_fi = args.test
     no_augment = args.no_augment
 
-    embedding_h5 = args.embedding
+    emb_path = Path(args.embedding)
 
-    ########## Foldseek code #########################3
+    if emb_path.is_dir():
+        embedding_mode = "pt_dir"
+        log(f"Embedding path is a directory: {emb_path}")
+    elif emb_path.is_file():
+        # Could be HDF5 or something else
+        if h5py.is_hdf5(str(emb_path)):
+            embedding_mode = "hdf5"
+            log(f"Embedding path is an HDF5 file: {emb_path}")
+        else:
+            raise ValueError(
+                f"Embedding file is not HDF5 and not a directory: {emb_path}"
+            )
+    else:
+        raise FileNotFoundError(f"Embedding path does not exist: {emb_path}")
+
+    ########## Foldseek code #########################
+
+    def load_records(enabled=False, fasta_path=""):
+        if not enabled:
+            return {}
+        assert fasta_path is not None
+        return parse_dict(fasta_path)
+
     allow_foldseek = args.allow_foldseek
-    fold_fasta_file = args.foldseek_fasta
-    # fold_vocab_file = args.foldseek_vocab
-    add_first = False
-    fold_record = {}
-    # fold_vocab = None
-    if allow_foldseek:
-        assert fold_fasta_file is not None
-        fold_fasta = parse_dict(fold_fasta_file)
-        for rec_k, rec_v in fold_fasta.items():
-            fold_record[rec_k] = rec_v
+    allow_backbone3di = args.allow_backbone3di
+
+    fold_record = load_records(allow_foldseek, args.foldseek_fasta)
+    backbone_record = load_records(allow_backbone3di, args.backbone3di_fasta)
+
+    backbone_vocab = build_backbone_vocab()
+
+    foldseek3dicontext = Foldseek3diContext(
+        # foldseek info
+        allow_foldseek=allow_foldseek,
+        fold_record=fold_record,
+        fold_vocab=fold_vocab,
+        # backbone info
+        allow_backbone3di=allow_backbone3di,
+        backbone_record=backbone_record,
+        backbone_vocab=backbone_vocab,
+    )
+
     ##################################################
 
     train_df = pd.read_csv(train_fi, sep="\t", header=None)
@@ -564,15 +692,15 @@ def train_model(args, output):
         train_p2 = train_df["prot2"]
         train_y = torch.from_numpy(train_df["label"].values)
     else:
-        train_p1 = pd.concat((train_df["prot1"], train_df["prot2"]), axis=0).reset_index(
-            drop=True
-        )
-        train_p2 = pd.concat((train_df["prot2"], train_df["prot1"]), axis=0).reset_index(
-            drop=True
-        )
-        train_y = torch.from_numpy(
-            pd.concat((train_df["label"], train_df["label"])).values
-        )
+        train_p1 = pd.concat(
+            (train_df["prot1"], train_df["prot2"]), axis=0
+        ).reset_index(drop=True)
+        train_p2 = pd.concat(
+            (train_df["prot2"], train_df["prot1"]), axis=0
+        ).reset_index(drop=True)
+        y_np = pd.concat((train_df["label"], train_df["label"]), axis=0).to_numpy(dtype="float32", copy=True)
+        train_y = torch.from_numpy(y_np)
+
 
     train_dataset = PairedDataset(train_p1, train_p2, train_y)
     train_iterator = torch.utils.data.DataLoader(
@@ -605,11 +733,17 @@ def train_model(args, output):
 
     all_proteins = set(train_p1).union(train_p2).union(test_p1).union(test_p2)
 
-    embeddings = {}
-    with h5py.File(embedding_h5, "r") as h5fi:
-        for prot_name in tqdm(all_proteins):
-            embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
-    # embeddings = load_hdf5_parallel(embedding_h5, all_proteins)
+    # Load embeddings
+    embeddings: dict[str, torch.Tensor] = {}
+    if embedding_mode == "pt_dir":
+        embedding_loader = EmbeddingLoader(
+            embedding_dir_name=emb_path, protein_names=all_proteins, num_workers=2
+        )
+        embeddings = embedding_loader.embeddings_cpu
+    elif embedding_mode == "hdf5":
+        with h5py.File(emb_path, "r") as h5fi:
+            for prot_name in tqdm(all_proteins, desc="Loading HDF5 embeddings"):
+                embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
 
     # Topsy-Turvy
     run_tt = args.run_tt
@@ -629,68 +763,68 @@ def train_model(args, output):
     else:
         glider_mat, glider_map = (None, None)
 
-    if args.checkpoint is None:
-        # Create embedding model
-        input_dim = args.input_dim
+    # Create embedding model
+    input_dim = args.input_dim
 
-        ############### foldseek code ###########################
+    projection_dim = args.projection_dim
 
-        if allow_foldseek and add_first:
-            input_dim += len(fold_vocab)
+    dropout_p = args.dropout_p
+    embedding_model = FullyConnectedEmbed(input_dim, projection_dim, dropout=dropout_p)
+    log("Initializing embedding model with:", file=output)
+    log(f"\tprojection_dim: {projection_dim}", file=output)
+    log(f"\tdropout_p: {dropout_p}", file=output)
 
-        ##########################################################
+    # Create contact model
+    hidden_dim = args.hidden_dim
+    kernel_width = args.kernel_width
+    log("Initializing contact model with:", file=output)
+    log(f"\thidden_dim: {hidden_dim}", file=output)
+    log(f"\tkernel_width: {kernel_width}", file=output)
 
-        projection_dim = args.projection_dim
+    proj_dim = projection_dim
+    if allow_foldseek:
+        proj_dim += len(fold_vocab)
+    if allow_backbone3di:
+        proj_dim += len(backbone_vocab)
+    contact_model = ContactCNN(proj_dim, hidden_dim, kernel_width)
 
-        dropout_p = args.dropout_p
-        embedding_model = FullyConnectedEmbed(
-            input_dim, projection_dim, dropout=dropout_p
-        )
-        log("Initializing embedding model with:", file=output)
-        log(f"\tprojection_dim: {projection_dim}", file=output)
-        log(f"\tdropout_p: {dropout_p}", file=output)
+    # Create the full model
+    do_w = not args.no_w
+    do_pool = args.do_pool
+    pool_width = args.pool_width
+    do_sigmoid = not args.no_sigmoid
+    log("Initializing interaction model with:", file=output)
+    log(f"\tdo_poool: {do_pool}", file=output)
+    log(f"\tpool_width: {pool_width}", file=output)
+    log(f"\tdo_w: {do_w}", file=output)
+    log(f"\tdo_sigmoid: {do_sigmoid}", file=output)
+    model = ModelInteraction(
+        embedding_model,
+        contact_model,
+        use_cuda,
+        do_w=do_w,
+        pool_size=pool_width,
+        do_pool=do_pool,
+        do_sigmoid=do_sigmoid,
+    )
+    model.use_cuda = use_cuda
 
-        # Create contact model
-        hidden_dim = args.hidden_dim
-        kernel_width = args.kernel_width
-        log("Initializing contact model with:", file=output)
-        log(f"\thidden_dim: {hidden_dim}", file=output)
-        log(f"\tkernel_width: {kernel_width}", file=output)
+    log(model, file=output)
 
-        proj_dim = projection_dim
-        if allow_foldseek and not add_first:
-            proj_dim += len(fold_vocab)
-        contact_model = ContactCNN(proj_dim, hidden_dim, kernel_width)
-
-        # Create the full model
-        do_w = not args.no_w
-        do_pool = args.do_pool
-        pool_width = args.pool_width
-        do_sigmoid = not args.no_sigmoid
-        log("Initializing interaction model with:", file=output)
-        log(f"\tdo_poool: {do_pool}", file=output)
-        log(f"\tpool_width: {pool_width}", file=output)
-        log(f"\tdo_w: {do_w}", file=output)
-        log(f"\tdo_sigmoid: {do_sigmoid}", file=output)
-        model = ModelInteraction(
-            embedding_model,
-            contact_model,
-            use_cuda,
-            do_w=do_w,
-            pool_size=pool_width,
-            do_pool=do_pool,
-            do_sigmoid=do_sigmoid,
-        )
-
-        log(model, file=output)
-
-    else:
+    if args.checkpoint is not None:
         log(
             f"Loading model from checkpoint {args.checkpoint}",
             file=output,
         )
-        model = torch.load(args.checkpoint)
-        model.use_cuda = use_cuda
+        state_dict = torch.load(args.checkpoint)
+        try:
+            model.load_state_dict(state_dict)
+        except RuntimeError:
+            log(
+                "Warning: Loading model with strict=False due to mismatch in state_dict keys",
+                file=output,
+            )
+            model.load_state_dict(state_dict, strict=False)
 
     if use_cuda:
         model.cuda()
@@ -705,8 +839,14 @@ def train_model(args, output):
     digits = int(np.floor(np.log10(num_epochs))) + 1
     save_prefix = args.save_prefix
 
-    params = [p for p in model.parameters() if p.requires_grad]
-    optim = torch.optim.Adam(params, lr=lr, weight_decay=wd)
+    def lr_lambda(epoch):  
+        return 1.0 if epoch < 2 else 0.1 
+    
+    base_optim = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+    optimizer = optim.Lookahead(base_optim, k=5, alpha=0.5)
+
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer.optimizer, lr_lambda)
 
     log(f'Using save prefix "{save_prefix}"', file=output)
     log(f"Training with Adam: lr={lr}, weight_decay={wd}", file=output)
@@ -718,8 +858,23 @@ def train_model(args, output):
 
     batch_report_fmt = "[{}/{}] training {:.1%}: Loss={:.6}, Accuracy={:.3%}, MSE={:.6}"
     epoch_report_fmt = "Finished Epoch {}/{}: Loss={:.6}, Accuracy={:.3%}, MSE={:.6}, Precision={:.6}, Recall={:.6}, F1={:.6}, AUPR={:.6}"
+    
+    
+    best_aupr = float("-inf")
+    best_epoch = -1
+    patience = 3
+    min_delta = 1e-4
+    bad_epochs = 0
 
+    best_state_path = None
+    if save_prefix is not None:
+        best_state_path = save_prefix + "_best_state_dict.pt"
+
+    
+  
+    
     N = len(train_iterator) * batch_size
+    
     for epoch in range(num_epochs):
         model.train()
 
@@ -727,10 +882,14 @@ def train_model(args, output):
         loss_accum = 0
         acc_accum = 0
         mse_accum = 0
+        
+      
+
 
         # Train batches
         for z0, z1, y in train_iterator:
-            loss, correct, mse, b = interaction_grad(
+            optimizer.zero_grad(set_to_none=True)
+            loss, correct, mse, b, p_prob = interaction_grad(
                 model,
                 z0,
                 z1,
@@ -742,10 +901,7 @@ def train_model(args, output):
                 glider_map=glider_map,
                 glider_mat=glider_mat,
                 use_cuda=use_cuda,
-                allow_foldseek=allow_foldseek,
-                fold_record=fold_record,
-                fold_vocab=fold_vocab,
-                add_first=add_first,
+                structural_context=foldseek3dicontext,
             )
 
             n += b
@@ -759,9 +915,16 @@ def train_model(args, output):
             mse_accum += delta / n
 
             report = (n - b) // 100 < n // 100
+            
 
-            optim.step()
-            optim.zero_grad()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) 
+            optimizer.step()
+            
+           
+            # ✅ 
+            scheduler.step()
+         
+            
             model.clip()
 
             if report:
@@ -774,11 +937,24 @@ def train_model(args, output):
                     mse_accum,
                 ]
                 log(batch_report_fmt.format(*tokens), file=output)
+                #log(f"true_pos_rate_accum:{true_pos_rate_accum}, pos_rate_accum:{pos_rate_accum}", file=output)
+                if args.log_wandb:
+                    run.log(
+                        {
+                            "train/loss": loss_accum,
+                            "train/accuracy": acc_accum,
+                            "train/mse": mse_accum,
+                        }
+                    )
+
                 output.flush()
 
         model.eval()
+        
 
         with torch.no_grad():
+       
+            
             (
                 inter_loss,
                 inter_correct,
@@ -788,15 +964,12 @@ def train_model(args, output):
                 inter_f1,
                 inter_aupr,
             ) = interaction_eval(
-                model,
-                test_iterator,
-                embeddings,
-                use_cuda,
-                allow_foldseek,
-                fold_record,
-                fold_vocab,
-                add_first,
+                model, test_iterator, embeddings, use_cuda,foldseek3dicontext
             )
+            
+            
+            
+            
             tokens = [
                 epoch + 1,
                 num_epochs,
@@ -809,24 +982,83 @@ def train_model(args, output):
                 inter_aupr,
             ]
             log(epoch_report_fmt.format(*tokens), file=output)
+
+            if args.log_wandb:
+                run.log(
+                    {
+                        "val/loss": inter_loss,
+                        "val/accuracy": inter_correct
+                        / (len(test_iterator) * batch_size),
+                        "val/mse": inter_mse,
+                        "val/precision": inter_pr,
+                        "val/recall": inter_re,
+                        "val/f1": inter_f1,
+                        "val/aupr": inter_aupr,
+                    }
+                )
+
+            # ---- Early stopping on val AUPR (save only best)
+            val_aupr = float(inter_aupr.item() if hasattr(inter_aupr, "item") else inter_aupr)
+
+            if val_aupr > best_aupr + min_delta:
+                best_aupr = val_aupr
+                best_epoch = epoch + 1
+                bad_epochs = 0
+
+                if best_state_path is not None:
+                    torch.save(model.state_dict(), best_state_path)
+                    log(
+                        f"[BEST] epoch {best_epoch}: val AUPR={best_aupr:.6f} -> saved {best_state_path}",
+                        file=output,
+                    )
+            else:
+                bad_epochs += 1
+                log(
+                    f"[BEST] no improvement (best epoch {best_epoch}, AUPR={best_aupr:.6f}) "
+                    f"bad_epochs={bad_epochs}/{patience}",
+                    file=output,
+                )
+            # # Save the model
+            # if save_prefix is not None:
+            #     save_path = (
+            #         save_prefix + "_epoch" + str(epoch + 1).zfill(digits) + ".sav"
+            #     )
+            #     log(f"Saving model to {save_path}", file=output)
+            #     model.cpu()
+            #     torch.save(model, save_path)
+            #     if use_cuda:
+            #         model.cuda()
+
             output.flush()
 
-            # Save the model
-            if save_prefix is not None:
-                save_path = save_prefix + "_epoch" + str(epoch + 1).zfill(digits) + ".sav"
-                log(f"Saving model to {save_path}", file=output)
-                model.cpu()
-                torch.save(model, save_path)
-                if use_cuda:
-                    model.cuda()
+            if bad_epochs >= patience:
+                log(
+                    f"[EarlyStop] stop at epoch {epoch+1}. best epoch {best_epoch}, best AUPR={best_aupr:.6f}",
+                    file=output,
+                )
+                break
 
-        output.flush()
 
     if save_prefix is not None:
-        save_path = save_prefix + "_final.sav"
-        log(f"Saving final model to {save_path}", file=output)
-        model.cpu()
-        torch.save(model, save_path)
+        # save_path = save_prefix + "_final.sav"
+        # state_dict_path = save_prefix + "_final_state_dict.sav"
+        # log(f"Saving final model to {save_path}", file=output)
+        # model.cpu()
+        # torch.save(model, save_path)
+        # #torch.save(model.state_dict(), state_dict_path)
+
+        if args.log_wandb:
+                # Upload trained model as artifact
+                artifact = wandb.Artifact(
+                    name="trained-model",
+                    type="model",
+                    description="D-SCRIPT trained interaction model",
+                )
+                #artifact.add_file(state_dict_path)
+                artifact.add_file(best_state_path)
+                run.log_artifact(artifact)
+                run.finish()
+
         if use_cuda:
             model.cuda()
 

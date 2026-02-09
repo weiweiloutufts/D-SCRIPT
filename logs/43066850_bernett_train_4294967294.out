@@ -1,0 +1,7 @@
+torch_optimizer OK
+2.5.1 12.4 True 1
+2026-02-08 20:13:50.042 | INFO     | dscript.utils:log:49 - D-SCRIPT Version 0.3.1
+2026-02-08 20:13:50.050 | INFO     | dscript.utils:log:49 - Called as: /hpc/home/wl324/D-SCRIPT/dscript/commands/train.py --train /hpc/home/wl324/projects/tt3d/data/bernett_train.tsv --test /hpc/home/wl324/projects/tt3d/data/bernett_validation.tsv --embedding /hpc/home/wl324/projects/tt3d/data/esm2_bernett --input-dim 1280 --outfile /hpc/home/wl324/projects/tt3d/data/results/bernett_esm2_train_0.95/bernett_results.log --save-prefix /hpc/home/wl324/projects/tt3d/data/results/bernett_esm2_train_0.95/bernett --device 0 --lr 0.0005 --lambda 0.95 --num-epoch 20 --weight-decay 0.001 --batch-size 32 --pool-width 9 --kernel-width 7 --dropout-p 0.2 --projection-dim 100 --hidden-dim 50
+2026-02-08 20:13:50.357 | INFO     | dscript.utils:log:49 - Using CUDA device 0 - NVIDIA A100-SXM4-80GB
+2026-02-08 20:13:50.362 | INFO     | dscript.utils:log:49 - Embedding path is a directory: /hpc/home/wl324/projects/tt3d/data/esm2_bernett
+2026-02-08 20:14:02.074 | INFO     | dscript.utils:log:49 - Loaded 7691 embeddings to CPU.
