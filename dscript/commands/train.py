@@ -291,7 +291,7 @@ def predict_cmap_interaction(
     b = len(n0)
 
     p_hat = []
-    #aug_x_list = []
+    # aug_x_list = []
     c_map_mag = []
     for i in range(b):
         z_a = tensors[n0[i]]  # 1 x seqlen x dim
@@ -373,12 +373,11 @@ def predict_cmap_interaction(
         )
         p_hat.append(ph)
         c_map_mag.append(torch.mean(cm))
-     #   aug_x_list.append(aug_x.detach().cpu())
+    #   aug_x_list.append(aug_x.detach().cpu())
     p_hat = torch.stack(p_hat, 0).view(-1)  # [B]
     c_map_mag = torch.stack(c_map_mag, dim=0).view(-1)  # [B]
-    #all_aug_x = torch.cat(aug_x_list, dim=0)
-    
-  
+    # all_aug_x = torch.cat(aug_x_list, dim=0)
+
     return c_map_mag, p_hat
 
 
@@ -427,11 +426,6 @@ def make_mixup_params(batch_size: int, alpha: float, device):
         lam = torch.distributions.Beta(alpha, alpha).sample((batch_size,)).to(device)
 
     return perm, lam
-
-
-import torch
-
-import torch.nn.functional as F
 
 
 def cosine_proto_pull(z_mix, y_mix, pos_proto, neg_proto, neg_weight=0.1, eps=1e-8):
@@ -498,21 +492,20 @@ def interaction_grad(
     c_map_mag, p_hat = predict_cmap_interaction(
         model, n0, n1, tensors, use_cuda, structural_context
     )
-    
+
     b = len(n0)
-    #z_mix = z_mix.to(p_hat.device)
+    # z_mix = z_mix.to(p_hat.device)
     if use_cuda:
         y = y.cuda()
     y = Variable(y).float().view(-1)
     device = y.device
 
-    
     # --- smooth labels
-    #y_mix = smooth_labels(y, smoothing=0.1)
+    # y_mix = smooth_labels(y, smoothing=0.1)
 
     # --- BCE (make sure shapes match)
     logits = p_hat.view(-1).float()  # rename it logits everywhere
-    bce_loss = F.binary_cross_entropy_with_logits(logits, y) 
+    bce_loss = F.binary_cross_entropy_with_logits(logits, y)
 
     if run_tt:
         g_score = []
@@ -532,12 +525,11 @@ def interaction_grad(
     else:
         accuracy_loss = bce_loss
 
-    representation_loss = torch.mean(c_map_mag)
-    
+    # representation_loss = torch.mean(c_map_mag)
+    representation_loss = c_map_mag.pow(2).mean()
     # --- total loss
-    loss = (
-        (accuracy_weight * accuracy_loss)
-        + ((1.0 - accuracy_weight) * representation_loss)
+    loss = (accuracy_weight * accuracy_loss) + (
+        (1.0 - accuracy_weight) * representation_loss
     )
 
     # Backprop Loss
@@ -548,11 +540,10 @@ def interaction_grad(
         p_guess = (p_prob > 0.5).float()
         correct = (p_guess == y).sum().item()
         mse = ((y - p_prob) ** 2).mean().item()
-        
-        
+
         assert torch.isfinite(logits).all()
 
-    return loss.item(), correct, mse, b,p_prob
+    return loss.item(), correct, mse, b, p_prob
 
 
 def interaction_eval(
@@ -584,12 +575,14 @@ def interaction_eval(
 
     for n0, n1, y in test_iterator:
         # predict_interaction should return logits shaped [B] or [B,1]
-        logits = predict_interaction(model, n0, n1, tensors, use_cuda, structural_context)
-        p_hat_list.append(logits.view(-1))   # force [B]
-        y_list.append(y.view(-1))            # force [B]
+        logits = predict_interaction(
+            model, n0, n1, tensors, use_cuda, structural_context
+        )
+        p_hat_list.append(logits.view(-1))  # force [B]
+        y_list.append(y.view(-1))  # force [B]
 
-    logits = torch.cat(p_hat_list, dim=0)    # [N]
-    y = torch.cat(y_list, dim=0).float()     # [N]
+    logits = torch.cat(p_hat_list, dim=0)  # [N]
+    y = torch.cat(y_list, dim=0).float()  # [N]
 
     device = logits.device
     y = y.to(device)
@@ -598,7 +591,7 @@ def interaction_eval(
     loss = F.binary_cross_entropy_with_logits(logits, y).item()
 
     with torch.no_grad():
-        p = torch.sigmoid(logits)            # [N] probabilities
+        p = torch.sigmoid(logits)  # [N] probabilities
 
         pred = (p > 0.5).float()
         correct = (pred == y).sum().item()
@@ -609,12 +602,10 @@ def interaction_eval(
         tp = torch.sum(pred * y).item()
         fp = torch.sum(pred * (1 - y)).item()
         fn = torch.sum((1 - pred) * y).item()
-        
 
         pr = tp / (tp + fp + 1e-8)
         re = tp / (tp + fn + 1e-8)
         f1 = 2 * pr * re / (pr + re + 1e-8)
-        
 
     # --- AUPR: use probs (recommended)
     y_np = y.detach().cpu().numpy()
@@ -702,9 +693,10 @@ def train_model(args, output):
         train_p2 = pd.concat(
             (train_df["prot2"], train_df["prot1"]), axis=0
         ).reset_index(drop=True)
-        train_y = torch.from_numpy(
-            pd.concat((train_df["label"], train_df["label"])).values
+        y_np = pd.concat((train_df["label"], train_df["label"]), axis=0).to_numpy(
+            dtype="float32", copy=True
         )
+        train_y = torch.from_numpy(y_np)
 
     train_dataset = PairedDataset(train_p1, train_p2, train_y)
     train_iterator = torch.utils.data.DataLoader(
@@ -741,7 +733,7 @@ def train_model(args, output):
     embeddings: dict[str, torch.Tensor] = {}
     if embedding_mode == "pt_dir":
         embedding_loader = EmbeddingLoader(
-            embedding_dir_name=emb_path, protein_names=all_proteins, num_workers=4
+            embedding_dir_name=emb_path, protein_names=all_proteins, num_workers=2
         )
         embeddings = embedding_loader.embeddings_cpu
     elif embedding_mode == "hdf5":
@@ -843,12 +835,11 @@ def train_model(args, output):
     digits = int(np.floor(np.log10(num_epochs))) + 1
     save_prefix = args.save_prefix
 
-    def lr_lambda(epoch):  
-        return 1.0 if epoch < 2 else 0.1 
-    
+    def lr_lambda(epoch):
+        return 1.0 if epoch < 2 else 0.1
+
     base_optim = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
     optimizer = optim.Lookahead(base_optim, k=5, alpha=0.5)
-
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer.optimizer, lr_lambda)
 
@@ -862,23 +853,17 @@ def train_model(args, output):
 
     batch_report_fmt = "[{}/{}] training {:.1%}: Loss={:.6}, Accuracy={:.3%}, MSE={:.6}"
     epoch_report_fmt = "Finished Epoch {}/{}: Loss={:.6}, Accuracy={:.3%}, MSE={:.6}, Precision={:.6}, Recall={:.6}, F1={:.6}, AUPR={:.6}"
-    
-    
+
     best_aupr = float("-inf")
     best_epoch = -1
-    patience = 3
+    patience = 5
     min_delta = 1e-4
     bad_epochs = 0
 
-    best_state_path = None
-    if save_prefix is not None:
-        best_state_path = save_prefix + "_best_state_dict.pt"
+    best_state_path = (save_prefix + "_best_state_dict.pt") if save_prefix else "best_state_dict.pt"
 
-    
-  
-    
     N = len(train_iterator) * batch_size
-    
+
     for epoch in range(num_epochs):
         model.train()
 
@@ -886,9 +871,6 @@ def train_model(args, output):
         loss_accum = 0
         acc_accum = 0
         mse_accum = 0
-        
-      
-
 
         # Train batches
         for z0, z1, y in train_iterator:
@@ -919,16 +901,13 @@ def train_model(args, output):
             mse_accum += delta / n
 
             report = (n - b) // 100 < n // 100
-            
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) 
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            
-           
-            # ✅ 
+
+            # ✅
             scheduler.step()
-         
-            
+
             model.clip()
 
             if report:
@@ -941,7 +920,7 @@ def train_model(args, output):
                     mse_accum,
                 ]
                 log(batch_report_fmt.format(*tokens), file=output)
-                #log(f"true_pos_rate_accum:{true_pos_rate_accum}, pos_rate_accum:{pos_rate_accum}", file=output)
+                # log(f"true_pos_rate_accum:{true_pos_rate_accum}, pos_rate_accum:{pos_rate_accum}", file=output)
                 if args.log_wandb:
                     run.log(
                         {
@@ -954,11 +933,9 @@ def train_model(args, output):
                 output.flush()
 
         model.eval()
-        
 
         with torch.no_grad():
-       
-            
+
             (
                 inter_loss,
                 inter_correct,
@@ -968,12 +945,9 @@ def train_model(args, output):
                 inter_f1,
                 inter_aupr,
             ) = interaction_eval(
-                model, test_iterator, embeddings, use_cuda,foldseek3dicontext
+                model, test_iterator, embeddings, use_cuda, foldseek3dicontext
             )
-            
-            
-            
-            
+
             tokens = [
                 epoch + 1,
                 num_epochs,
@@ -1002,6 +976,10 @@ def train_model(args, output):
                 )
 
             # ---- Early stopping on val AUPR (save only best)
+            val_aupr = float(
+                inter_aupr.item() if hasattr(inter_aupr, "item") else inter_aupr
+            )
+
             val_aupr = float(inter_aupr.item() if hasattr(inter_aupr, "item") else inter_aupr)
 
             if val_aupr > best_aupr + min_delta:
@@ -1009,63 +987,30 @@ def train_model(args, output):
                 best_epoch = epoch + 1
                 bad_epochs = 0
 
-                if best_state_path is not None:
-                    torch.save(model.state_dict(), best_state_path)
-                    log(
-                        f"[BEST] epoch {best_epoch}: val AUPR={best_aupr:.6f} -> saved {best_state_path}",
-                        file=output,
-                    )
+                state = model.state_dict()
+                torch.save(state, best_state_path)
+                log(f"[BEST] epoch {best_epoch}: val AUPR={best_aupr:.6f} -> saved {best_state_path}", file=output)
             else:
                 bad_epochs += 1
-                log(
-                    f"[BEST] no improvement (best epoch {best_epoch}, AUPR={best_aupr:.6f}) "
-                    f"bad_epochs={bad_epochs}/{patience}",
-                    file=output,
-                )
-            # # Save the model
-            # if save_prefix is not None:
-            #     save_path = (
-            #         save_prefix + "_epoch" + str(epoch + 1).zfill(digits) + ".sav"
-            #     )
-            #     log(f"Saving model to {save_path}", file=output)
-            #     model.cpu()
-            #     torch.save(model, save_path)
-            #     if use_cuda:
-            #         model.cuda()
+                log(f"[BEST] no improvement (best epoch {best_epoch}, AUPR={best_aupr:.6f}) bad_epochs={bad_epochs}/{patience}", file=output)
 
             output.flush()
 
             if bad_epochs >= patience:
-                log(
-                    f"[EarlyStop] stop at epoch {epoch+1}. best epoch {best_epoch}, best AUPR={best_aupr:.6f}",
-                    file=output,
-                )
+                log(f"[EarlyStop] stop at epoch {epoch+1}. best epoch {best_epoch}, best AUPR={best_aupr:.6f}", file=output)
                 break
 
-
     if save_prefix is not None:
-        # save_path = save_prefix + "_final.sav"
-        # state_dict_path = save_prefix + "_final_state_dict.sav"
-        # log(f"Saving final model to {save_path}", file=output)
-        # model.cpu()
-        # torch.save(model, save_path)
-        # #torch.save(model.state_dict(), state_dict_path)
-
         if args.log_wandb:
-                # Upload trained model as artifact
-                artifact = wandb.Artifact(
-                    name="trained-model",
-                    type="model",
-                    description="D-SCRIPT trained interaction model",
-                )
-                #artifact.add_file(state_dict_path)
-                artifact.add_file(best_state_path)
-                run.log_artifact(artifact)
-                run.finish()
-
-        if use_cuda:
-            model.cuda()
-
+            # Upload trained model as artifact
+            artifact = wandb.Artifact(
+                name="trained-model",
+                type="model",
+                description="D-SCRIPT trained interaction model",
+            )
+            artifact.add_file(best_state_path)
+            run.log_artifact(artifact)
+            run.finish()
 
 def main(args):
     """

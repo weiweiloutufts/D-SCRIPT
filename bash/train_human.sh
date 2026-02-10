@@ -1,13 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=clean
+#SBATCH --job-name=human
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
 #SBATCH --constraint="a100-80G"
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 #SBATCH --time=96:00:00
-#SBATCH --output=logs/%A_bernett_train_clean_%a.out
-#SBATCH --error=logs/%A_bernett_train_clean_%a.err
+#SBATCH --output=logs/%A_bernett_train_human_%a.out
+#SBATCH --error=logs/%A_bernett_train_human_%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 module purge
@@ -48,17 +48,17 @@ fi
 
 
 TOPSY_TURVY=
-TRAIN=/cluster/tufts/cowenlab/tt3d+/data/gold_data/bernett_train.tsv
-TEST=/cluster/tufts/cowenlab/tt3d+/data/gold_data/bernett_validation.tsv
+TRAIN=/cluster/tufts/cowenlab/tt3d+/data/pair_files/human_train.tsv
+TEST=/cluster/tufts/cowenlab/tt3d+/data/pair_files/human_test.tsv
 
 # These are *paths* and numeric dims, not full flags
-EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2/bernett
+EMBEDDING=/cluster/tufts/cowenlab/tt3d+/data/esm2_mapped/human
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/cluster/tufts/cowenlab/wlou01/D-SCRIPT/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_clean
+OUTPUT_FOLDER=${OUTPUT_BASE}/human_esm2_train
 OUTPUT_PREFIX=bernett
-FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/bernett.fasta
+FOLDSEEK_FASTA=/cluster/tufts/cowenlab/tt3d+/data/foldseek_files/human.fasta
 
 DEVICE=0
 
@@ -115,10 +115,10 @@ $PY -m dscript.commands.train \
     ${EMBEDDING_DIM_FLAG} \
     ${TOPSY_TURVY} \
     --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
-    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_clean" \
+    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}" \
     --device "${DEVICE}" \
     --lr 0.0005 \
-    --lambda 0.05 \
+    --lambda 0.99 \
     --num-epoch 20 \
     --weight-decay 0.001 \
     --batch-size 32 \
