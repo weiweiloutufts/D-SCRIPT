@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=train
+#SBATCH --job-name=train_batch40_5
 #SBATCH -p cellbio-dgx
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=128G
 #SBATCH --time=48:00:00
-#SBATCH --output=/hpc/home/wl324/D-SCRIPT/logs/%A_bernett_train_%a.out
-#SBATCH --error=/hpc/home/wl324/D-SCRIPT/logs/%A_bernett_train_%a.err
+#SBATCH --output=/hpc/home/wl324/D-SCRIPT/logs/%A_bernett_train_batch_%a.out
+#SBATCH --error=/hpc/home/wl324/D-SCRIPT/logs/%A_bernett_train_batch_%a.err
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
@@ -34,8 +34,8 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-lam=0.9999
-lr=0.0005
+lam=0.99
+lr=0.0001
 wd=0.0005
 
 TOPSY_TURVY=
@@ -47,7 +47,7 @@ EMBEDDING=/hpc/home/wl324/projects/tt3d/data_archive/esm2_bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/hpc/home/wl324/projects/tt3d/data/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_lr${lr}_lam${lam}_wd${wd}
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_batch_5_5_lr${lr}_lam${lam}_wd${wd}
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/hpc/home/wl324/tt3d/p_tt3d_new/fasta/full_fasta.fasta
 
@@ -101,12 +101,12 @@ fi
 
 
 
-export WANDB_NAME="bernett_lr${lr}_lam${lam}_wd${wd}"
-export WANDB_TAGS="bernett,aug,tauri"
-export WANDB_RUN_GROUP="tt3d_backbone"
-export WANDB_JOB_TYPE="train"
+export WANDB_NAME="bernett_batch_lr${lr}_lam${lam}_wd${wd}"
+export WANDB_TAGS="bernett,aug,tauri,batch"
+export WANDB_RUN_GROUP="tt3d_backbone_batch"
+export WANDB_JOB_TYPE="train_batch"
 
-$PY -m dscript.commands.train \
+$PY -m dscript.commands.train_batch \
   --train "${TRAIN}" \
   --test "${TEST}" \
   ${EMBEDDING_FLAG} \
@@ -119,7 +119,7 @@ $PY -m dscript.commands.train \
   --lambda "${lam}" \
   --num-epoch 20 \
   --weight-decay "${wd}" \
-  --batch-size 32 \
+  --batch-size 5 \
   --pool-width 9 \
   --kernel-width 7 \
   --dropout-p 0.2 \
@@ -127,7 +127,7 @@ $PY -m dscript.commands.train \
   --hidden-dim 50 \
   ${BACKBONE_CMD} \
   ${FOLDSEEK_CMD} \
-  --log_wandb \
-  --wandb-entity bergerlab-mit \
-  --wandb-project tt3d_backbone
+   --log_wandb \
+   --wandb-entity bergerlab-mit \
+   --wandb-project tt3d_backbone
 

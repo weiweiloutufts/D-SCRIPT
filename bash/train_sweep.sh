@@ -3,8 +3,9 @@
 #SBATCH -p cellbio-dgx
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=2
+#SBATCH --array=1-12
 #SBATCH --mem=128G
-#SBATCH --time=48:00:00
+#SBATCH --time=60:00:00
 #SBATCH --output=/hpc/home/wl324/D-SCRIPT/logs/%A_bernett_train_%a.out
 #SBATCH --error=/hpc/home/wl324/D-SCRIPT/logs/%A_bernett_train_%a.err
 #SBATCH --mail-type=ALL
@@ -34,90 +35,10 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+export WANDB_PROJECT=tt3d_backbone
+export OUTPUT_PREFIX="run_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 
+mkdir -p /hpc/home/wl324/projects/tt3d/data/outputs
 
-TOPSY_TURVY=
-TRAIN=/hpc/home/wl324/projects/tt3d/data/bernett_train.tsv
-TEST=/hpc/home/wl324/projects/tt3d/data/bernett_validation.tsv
-
-# These are *paths* and numeric dims, not full flags
-EMBEDDING=/hpc/home/wl324/projects/tt3d/data/esm2_bernett
-EMBEDDING_DIM=1280
-
-OUTPUT_BASE=/hpc/home/wl324/projects/tt3d/data/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_0.95
-OUTPUT_PREFIX=bernett
-FOLDSEEK_FASTA=/hpc/home/wl324/tt3d/p_tt3d_new/fasta/full_fasta.fasta
-
-DEVICE=0
-
-usage() {
-    echo "Usage: ./train.sh [-d DEVICE] [-v] [-f] [-F foldseek_fasta_file] [-e EMB_DIR] [-E EMB_DIM]
-
-    -d: CUDA device index (default: 0)
-    -v: When set, trains a Topsy-Turvy model
-    -f: When set, trains a TT3D model (enables foldseek features)
-    -F: Foldseek 3di sequences fasta file (used only when -f is set)
-    -e: Embedding h5py file or directory (default: $EMBEDDING)
-    -E: Embedding dimension (default: $EMBEDDING_DIM)
-    "
-}
-
-while getopts "d:t:fF:T:e:E:vo:p:" args; do
-    case $args in
-        d) DEVICE=${OPTARG} ;;
-        t) TRAIN=${OPTARG} ;;
-        T) TEST=${OPTARG} ;;
-        e) EMBEDDING=${OPTARG} ;;
-        E) EMBEDDING_DIM=${OPTARG} ;;
-        v) TOPSY_TURVY="--topsy-turvy --glider-weight 0.2 --glider-thres 0.925" ;;
-        o) OUTPUT_FOLDER=${OUTPUT_BASE}/${OPTARG} ;;
-        p) OUTPUT_PREFIX=${OPTARG} ;;
-        f) FOLDSEEK="" ;;
-        F) FOLDSEEK_FASTA=${OPTARG} ;;
-        *) usage; exit 1 ;;
-    esac
-done
-
-# Build flags from the path / dim variables
-EMBEDDING_FLAG="--embedding ${EMBEDDING}"
-EMBEDDING_DIM_FLAG="--input-dim ${EMBEDDING_DIM}"
-
-BACKBONE_CMD=""
-if [ -n "$BACKBONE" ]; then
-    BACKBONE_CMD="--allow_backbone3di --backbone3di_fasta ${FOLDSEEK_FASTA}"
-fi
-
-FOLDSEEK_CMD=""
-if [ -n "$FOLDSEEK" ]; then
-    FOLDSEEK_CMD="--allow_foldseek --foldseek_fasta ${FOLDSEEK_FASTA}" # --add_foldseek_after_projection"
-fi
-
-if [ ! -d "${OUTPUT_FOLDER}" ]; then
-    mkdir -p "${OUTPUT_FOLDER}"
-fi
-
-$PY -m dscript.commands.train \
-    --train "${TRAIN}" \
-    --test "${TEST}" \
-    ${EMBEDDING_FLAG} \
-    ${EMBEDDING_DIM_FLAG} \
-    ${TOPSY_TURVY} \
-    --outfile "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}_results.log" \
-    --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}" \
-    --device "${DEVICE}" \
-    --lr 0.0005 \
-    --lambda 0.95 \
-    --num-epoch 20 \
-    --weight-decay 0.001 \
-    --batch-size 32 \
-    --pool-width 9 \
-    --kernel-width 7 \
-    --dropout-p 0.2 \
-    --projection-dim 100 \
-    --hidden-dim 50 \
-    ${BACKBONE_CMD} \
-    ${FOLDSEEK_CMD} \
-    #--log_wandb \
-    #--wandb-entity bergerlab-mit \
-    #--wandb-project tt3d_backbone 
+export WANDB_TAGS="bernett,aug,tauri"
+wandb agent bergerlab-mit/tt3d_backbone/5onopuko --count 1

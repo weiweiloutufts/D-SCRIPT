@@ -21,3 +21,5 @@ RUN_DSCRIPT.sh
 **/*.h5
 **/.nfs*
 logs
+wandb
+logs

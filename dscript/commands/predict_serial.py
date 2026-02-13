@@ -24,6 +24,7 @@ from ..models.interaction_diex5 import DSCRIPTModel
 from ..utils import load_hdf5_parallel, log
 from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
 
+
 class PredictionArguments(NamedTuple):
     cmd: str
     device: int
@@ -227,13 +228,13 @@ def main(args):
             raise FileNotFoundError(f"Embedding path does not exist: {emb_path}")
 
         embeddings: dict[str, torch.Tensor] = {}
-        
+
         # log("Loading Embeddings...", file=logFile, print_also=True)
         # embeddings = load_hdf5_parallel(
         #     embPath, all_prots, n_jobs=args.load_proc
         # )  # Is a dict, legacy behavior
 
-         # Load embeddings
+        # Load embeddings
         embeddings: dict[str, torch.Tensor] = {}
         if embedding_mode == "pt_dir":
             embedding_loader = EmbeddingLoader(
@@ -245,9 +246,6 @@ def main(args):
                 for prot_name in tqdm(all_prots, desc="Loading HDF5 embeddings"):
                     embeddings[prot_name] = torch.from_numpy(h5fi[prot_name][:, :])
 
-        
-        
-        
     # Load Foldseek Sequences
     if foldseek_fasta is not None:
         log("Loading FoldSeek 3Di sequences...", file=logFile, print_also=True)
@@ -283,10 +281,10 @@ def main(args):
                     if n % 50 == 0:
                         f.flush()
                     n += 1
-                    
+
                     p0 = embeddings[n0]
                     p1 = embeddings[n1]
-                    
+
                     # Ensure 3D [B, L, D]
                     p0 = add_batch_dim_if_needed(p0)
                     p1 = add_batch_dim_if_needed(p1)
@@ -319,11 +317,11 @@ def main(args):
                                 raise e
                         else:
                             cm, logit = model.map_predict(p0, p1)
-                        
+
                         # p = p.item()
-                             
-                        prob_val  = torch.sigmoid(logit.view(-1).float()).item()
-                        
+
+                        prob_val = torch.sigmoid(logit.view(-1).float()).item()
+
                         f.write(f"{n0}\t{n1}\t{prob_val}\n")
                         if prob_val >= threshold:
                             pos_f.write(f"{n0}\t{n1}\t{prob_val}\n")

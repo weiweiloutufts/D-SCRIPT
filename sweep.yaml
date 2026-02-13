@@ -1,0 +1,64 @@
+program: -m
+method: random
+name: tt3d_backbone_sweep
+
+metric:
+  name: val/aupr
+  goal: maximize
+
+parameters:
+  lr:
+    values: [0.0001,0.0005, 0.001]
+  lambda:
+    values: [0.99, 0.999]
+  weight-decay:
+    values: [0.0005, 0.001]
+
+
+command:
+  - ${env}
+  - python
+  - -m
+  - dscript.commands.train
+
+  - --train
+  - /hpc/home/wl324/projects/tt3d/data_archive/bernett_train.tsv
+  - --test
+  - /hpc/home/wl324/projects/tt3d/data_archive/bernett_validation.tsv
+
+  - --save-prefix
+  - model
+
+  - --embedding
+  - /hpc/home/wl324/projects/tt3d/data_archive/esm2_bernett
+
+  - --device
+  - "0"
+
+  - --num-epochs
+  - "20"
+  - --batch-size 
+  - "32"
+  - --pool-width
+  - "9"
+  - --kernel-width
+  - "7"
+  - --dropout-p 
+  - "0.2"
+  - --projection-dim
+  - "100"
+  - --hidden-dim
+  - "50"
+
+  - ${args}
+
+  - --log_wandb
+  - --wandb-entity
+  - bergerlab-mit
+  - --wandb-project
+  - tt3d_backbone
+  
+
+
+
+

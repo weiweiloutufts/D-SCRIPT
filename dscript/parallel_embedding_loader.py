@@ -5,6 +5,7 @@ from tqdm import tqdm
 from functools import lru_cache
 import sys
 from dscript.utils import log
+from torch.nn.utils.rnn import pad_sequence
 
 
 def bucket_prefix2(acc: str) -> str:
@@ -74,3 +75,56 @@ class EmbeddingLoader:
         if prot_name not in self.embeddings_cpu:
             raise KeyError(f"Protein {prot_name} not found")
         return self.embeddings_cpu[prot_name]
+
+
+def batch_embeddings_from_pairs(
+    n0: list,
+    n1: list,
+    embeddings: dict,
+    device: str | torch.device | None = None,
+    return_lengths: bool = True,
+):
+    
+    if len(n0) != len(n1):
+        raise ValueError("n0 and n1 must have the same length")
+
+    z0_list = []
+    z1_list = []
+    len0 = []
+    len1 = []
+
+    for a, b in zip(n0, n1):
+        if a not in embeddings:
+            raise KeyError(f"Embedding for protein '{a}' not found")
+        if b not in embeddings:
+            raise KeyError(f"Embedding for protein '{b}' not found")
+
+        e0 = embeddings[a]
+        e1 = embeddings[b]
+
+        # normalize shapes: allow [L, D] or [1, L, D]
+        if e0.dim() == 3 and e0.shape[0] == 1:
+            e0 = e0.squeeze(0)
+        if e1.dim() == 3 and e1.shape[0] == 1:
+            e1 = e1.squeeze(0)
+
+        if e0.dim() != 2 or e1.dim() != 2:
+            raise ValueError(f"Embeddings must be 2D (L,D) or 3D with leading 1; got {e0.shape}, {e1.shape}")
+
+        len0.append(e0.shape[0])
+        len1.append(e1.shape[0])
+
+        z0_list.append(e0)
+        z1_list.append(e1)
+
+    # Pad sequences to max length in batch and stack: result [B, Lmax, D]
+    z0_batch = pad_sequence(z0_list, batch_first=True)
+    z1_batch = pad_sequence(z1_list, batch_first=True)
+
+    if device is not None:
+        z0_batch = z0_batch.to(device)
+        z1_batch = z1_batch.to(device)
+
+    if return_lengths:
+        return z0_batch, z1_batch, torch.tensor(len0, dtype=torch.long), torch.tensor(len1, dtype=torch.long)
+    return z0_batch, z1_batch

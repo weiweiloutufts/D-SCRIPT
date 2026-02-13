@@ -4,7 +4,11 @@ import torch.nn as nn
 
 from dscript.models.contact import ContactCNN
 from dscript.models.embedding import FullyConnectedEmbed
-from dscript.models.interaction import DSCRIPTModel, LogisticActivation, ModelInteraction
+from dscript.models.interaction import (
+    DSCRIPTModel,
+    LogisticActivation,
+    ModelInteraction,
+)
 
 
 class TestLogisticActivation:

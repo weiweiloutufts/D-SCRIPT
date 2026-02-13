@@ -196,9 +196,11 @@ def log_eval_metrics(
     if n == 0:
         loss = float("nan")
     else:
-        logits = torch.from_numpy(phats).float()      # [n]
+        logits = torch.from_numpy(phats).float()  # [n]
         y = torch.from_numpy(labels).float()
-        loss = float(F.binary_cross_entropy_with_logits(logits, y, reduction="mean").item())
+        loss = float(
+            F.binary_cross_entropy_with_logits(logits, y, reduction="mean").item()
+        )
         p_prob = torch.sigmoid(logits).cpu().numpy()
 
     # Other metrics
@@ -206,8 +208,8 @@ def log_eval_metrics(
         aupr = auroc = acc = prec = rec = f1 = mse = float("nan")
     else:
         y_true_int = labels.astype(int)
-     
-        y_pred = ( p_prob >= threshold).astype(int)
+
+        y_pred = (p_prob >= threshold).astype(int)
 
         aupr = float(average_precision_score(y_true_int, p_prob))
         auroc = (
@@ -220,7 +222,7 @@ def log_eval_metrics(
         prec = float(precision_score(y_true_int, y_pred, zero_division=0))
         rec = float(recall_score(y_true_int, y_pred, zero_division=0))
         f1 = float(f1_score(y_true_int, y_pred, zero_division=0))
-        mse = float(mean_squared_error(y_true_int,  p_prob))
+        mse = float(mean_squared_error(y_true_int, p_prob))
 
     with open(out_path_prefix + "_metrics.txt", "w+") as f:
         log(
@@ -390,20 +392,20 @@ def main(args):
                     b0=b_a,
                     b1=b_b,
                 )
-                _, logit= model.map_predict(interactionInputs)
-                
-                logit_val = logit.view(-1).float().item()           
-                prob_val  = torch.sigmoid(logit.view(-1).float()).item()
-                
+                _, logit = model.map_predict(interactionInputs)
+
+                logit_val = logit.view(-1).float().item()
+                prob_val = torch.sigmoid(logit.view(-1).float()).item()
+
                 logits.append(logit_val)
                 probs.append(prob_val)
                 labels.append(label)
-                
+
                 outFile.write(f"{n0}\t{n1}\t{label}\t{prob_val:.5}\n")
             except Exception as e:
                 sys.stderr.write(f"{n0} x {n1} - {e}")
 
-    logits = np.array(logits,dtype=np.float32)
+    logits = np.array(logits, dtype=np.float32)
     labels = np.array(labels, dtype=np.int64)
     probs = np.array(probs, dtype=np.float32)
 
@@ -415,7 +417,7 @@ def main(args):
         split_name="test",
     )
 
-    plot_eval_predictions(labels,probs, outPath)
+    plot_eval_predictions(labels, probs, outPath)
 
     outFile.close()
 
