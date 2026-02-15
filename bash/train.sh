@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=128G
-#SBATCH --time=48:00:00
+#SBATCH --time=96:00:00
 #SBATCH --output=/hpc/home/wl324/D-SCRIPT/logs/%A_bernett_train_%a.out
 #SBATCH --error=/hpc/home/wl324/D-SCRIPT/logs/%A_bernett_train_%a.err
 #SBATCH --mail-type=ALL
@@ -34,9 +34,9 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-lam=0.9999
+lam=0.999
 lr=0.0005
-wd=0.0005
+wd=0.0001
 
 TOPSY_TURVY=
 TRAIN=/hpc/home/wl324/projects/tt3d/data_archive/bernett_train.tsv
