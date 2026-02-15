@@ -860,7 +860,7 @@ def train_model(args, output):
     min_delta = 1e-4
     bad_epochs = 0
 
-    best_state_path = (save_prefix + "_best_state_dict.sav") if save_prefix else "best_state_dict.sav"
+    best_model_path = (save_prefix + "_best_model.sav") if save_prefix else "best_model.sav"
 
     N = len(train_iterator) * batch_size
 
@@ -986,8 +986,8 @@ def train_model(args, output):
                 best_aupr = val_aupr
                 best_epoch = epoch + 1
                 bad_epochs = 0
-                torch.save(model, best_state_path)
-                log(f"[BEST] epoch {best_epoch}: val AUPR={best_aupr:.6f} -> saved {best_state_path}", file=output)
+                torch.save(model, best_model_path)
+                log(f"[BEST] epoch {best_epoch}: val AUPR={best_aupr:.6f} -> saved {best_model_path}", file=output)
             else:
                 bad_epochs += 1
                 log(f"[BEST] no improvement (best epoch {best_epoch}, AUPR={best_aupr:.6f}) bad_epochs={bad_epochs}/{patience}", file=output)
@@ -1006,7 +1006,7 @@ def train_model(args, output):
                 type="model",
                 description="D-SCRIPT trained interaction model",
             )
-            artifact.add_file(best_state_path)
+            artifact.add_file(best_model_path)
             run.log_artifact(artifact)
             run.finish()
 
