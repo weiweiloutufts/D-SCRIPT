@@ -11,6 +11,7 @@ import sys
 from collections.abc import Callable
 from typing import NamedTuple
 import torch.nn.functional as F
+import wandb
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -32,7 +33,7 @@ from tqdm import tqdm
 from pathlib import Path
 from dscript.loading import LoadingPool
 
-from dscript.models.interaction_diex5 import InteractionInputs
+from dscript.models.interaction import InteractionInputs
 
 from ..foldseek import get_foldseek_onehot, build_backbone_vocab
 from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
@@ -82,7 +83,18 @@ def add_args(parser):
         help="Number of processes to use when loading embeddings (-1 = # of available CPUs, default=16). Because loading is IO-bound, values larger that the # of CPUs are allowed.",
     )
 
-    # Foldseek arguments
+     # wandb
+  
+    parser.add_argument(
+        "--log_wandb", action="store_true", help="Log metrics to Weights and Biases"
+    )
+    parser.add_argument(
+        "--wandb-entity", default=None, help="Weights and Biases entity name"
+    )
+    parser.add_argument(
+        "--wandb-project", default=None, help="Weights and Biases project name"
+    )
+
 
     ## Foldseek arguments
     parser.add_argument(
@@ -238,6 +250,18 @@ def log_eval_metrics(
             f"[{split_name}] f1: {f1:.6f}",
             file=f,
         )
+    if args.log_wandb:
+        run.log(
+            {
+                "test/loss": loss,
+                "test/accuracy": acc,
+                "test/mse": mse,
+                "test/precision": prec,
+                "test/recall": rec,
+                "test/f1": f1,
+                "test/aupr": aupr,
+            }
+        )
 
 
 def main(args):
@@ -246,6 +270,15 @@ def main(args):
 
     :meta private:
     """
+    if args.log_wandb:
+        run = wandb.init(
+            # Set the wandb entity where your project will be logged (generally your team name).
+            entity=args.wandb_entity,
+            # Set the wandb project where this run will be logged.
+            project=args.wandb_project,
+            # Track hyperparameters and run metadata.
+            config=vars(args),
+        )
     ########## Foldseek code #########################
     allow_foldseek = args.allow_foldseek
     fold_fasta_file = args.foldseek_fasta
@@ -416,6 +449,7 @@ def main(args):
         threshold=0.5,
         split_name="test",
     )
+    
 
     plot_eval_predictions(labels, probs, outPath)
 

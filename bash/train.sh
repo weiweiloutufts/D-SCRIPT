@@ -35,7 +35,7 @@ if [ $? -ne 0 ]; then
 fi
 
 lam=0.999
-lr=0.0005
+lr=0.0001
 wd=0.0001
 
 TOPSY_TURVY=

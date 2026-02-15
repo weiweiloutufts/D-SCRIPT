@@ -860,7 +860,7 @@ def train_model(args, output):
     min_delta = 1e-4
     bad_epochs = 0
 
-    best_state_path = (save_prefix + "_best_state_dict.pt") if save_prefix else "best_state_dict.pt"
+    best_state_path = (save_prefix + "_best_state_dict.sav") if save_prefix else "best_state_dict.sav"
 
     N = len(train_iterator) * batch_size
 
@@ -986,9 +986,7 @@ def train_model(args, output):
                 best_aupr = val_aupr
                 best_epoch = epoch + 1
                 bad_epochs = 0
-
-                state = model.state_dict()
-                torch.save(state, best_state_path)
+                torch.save(model, best_state_path)
                 log(f"[BEST] epoch {best_epoch}: val AUPR={best_aupr:.6f} -> saved {best_state_path}", file=output)
             else:
                 bad_epochs += 1
