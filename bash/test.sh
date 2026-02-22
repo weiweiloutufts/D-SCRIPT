@@ -36,7 +36,7 @@ FOLDSEEK_VOCAB=/hpc/home/wl324/D-SCRIPT/data/foldseek_vocab.json
 MODEL_PARAMS=""
 DEVICE=0
 # Set default model here:
-MODEL=/hpc/home/wl324/projects/tt3d/data/results/bernett_esm2_train_lr0.0005_lam0.999_wd0.0001/bernett_best_state_dict.pt
+MODEL=/hpc/home/wl324/projects/tt3d/data/results/bernett_esm2_trainNew_lr0.0005_lam0.999_wd0.0001/bernett_best_model.sav
 
 usage() {
     echo "USAGE: ./test.sh [-d DEVICE] [-m MODEL] [-T MODEL_TYPE]

@@ -98,21 +98,21 @@ class LogisticActivation(nn.Module):
 class PairClassifier2D(nn.Module):
     def __init__(self, hidden=128, p_drop=0.2):
         super().__init__()
-        self.feat = nn.Sequential(
-            nn.Conv2d(1, hidden, 3, padding=1),
-            nn.GELU(),
-            nn.Conv2d(hidden, hidden, 3, padding=1),
-            nn.GELU(),
-        )
-        self.dropout = nn.Dropout(p_drop)
-        self.pre_head_norm = nn.LayerNorm(hidden * 2)
-        self.head = nn.Sequential(
-            nn.Linear(hidden * 2, hidden // 2),
-            nn.GELU(),
-            nn.LayerNorm(hidden // 2),
-            nn.Dropout(p_drop),
-            nn.Linear(hidden // 2, 1),
-        )
+        # self.feat = nn.Sequential(
+        #     nn.Conv2d(1, hidden, 3, padding=1),
+        #     nn.GELU(),
+        #     nn.Conv2d(hidden, hidden, 3, padding=1),
+        #     nn.GELU(),
+        # )
+        # self.dropout = nn.Dropout(p_drop)
+        # self.pre_head_norm = nn.LayerNorm(hidden * 2)
+        # self.head = nn.Sequential(
+        #     nn.Linear(hidden * 2, hidden // 2),
+        #     nn.GELU(),
+        #     nn.LayerNorm(hidden // 2),
+        #     nn.Dropout(p_drop),
+        #     nn.Linear(hidden // 2, 1),
+        # )
 
     def forward(self, yhat_fused, gamma):
         tau = 5.0
@@ -363,25 +363,6 @@ class ModelInteraction(nn.Module):
             b1=b1,
         )
 
-    def _get_pos_grids(self, B, N, M, *, device, dtype):
-        key = (N, M)
-        if (
-            (self._pos_shape != key)
-            or (self._pos_dtype != dtype)
-            or (self._pos_device != device)
-            or (self._pos_i.numel() == 0)
-        ):
-
-            ii = torch.arange(N, device=device, dtype=dtype) / max(N - 1, 1)  # [N]
-            jj = torch.arange(M, device=device, dtype=dtype) / max(M - 1, 1)  # [M]
-            self._pos_i = ii.view(1, 1, N, 1)  # [1,1,N,1]
-            self._pos_j = jj.view(1, 1, 1, M)  # [1,1,1,M]
-            self._pos_shape = key
-            self._pos_dtype = dtype
-            self._pos_device = device
-
-        return self._pos_i.expand(B, 1, N, M), self._pos_j.expand(B, 1, N, M)
-
     def map_predict(self, *args, **kwargs):
         if len(args) == 1 and isinstance(args[0], InteractionInputs):
             cpredInputs = args[0]
@@ -427,7 +408,7 @@ class ModelInteraction(nn.Module):
         # ---- fuse global interaction into map
         B, _, N, M = yhat.shape
 
-        g = torch.cat([g_add, g_mul, int_abs, int_sub], dim=1)  # [B,2D]
+        g = torch.cat([g_add, g_mul, int_abs, int_sub], dim=1)  # [B,4D]
         gk = self.g_proj(g)  # [B,k]
 
         gk_map = gk[:, :, None, None].expand(B, gk.shape[1], N, M)  # [B,k,N,M]

@@ -36,7 +36,8 @@ fi
 
 lam=0.999
 lr=0.0001
-wd=0.0001
+wd=0.001
+bs=48
 
 TOPSY_TURVY=
 TRAIN=/hpc/home/wl324/projects/tt3d/data_archive/bernett_train.tsv
@@ -47,7 +48,7 @@ EMBEDDING=/hpc/home/wl324/projects/tt3d/data_archive/esm2_bernett
 EMBEDDING_DIM=1280
 
 OUTPUT_BASE=/hpc/home/wl324/projects/tt3d/data/results
-OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_lr${lr}_lam${lam}_wd${wd}
+OUTPUT_FOLDER=${OUTPUT_BASE}/bernett_esm2_train_lr${lr}_lam${lam}_wd${wd}_bs${bs}
 OUTPUT_PREFIX=bernett
 FOLDSEEK_FASTA=/hpc/home/wl324/tt3d/p_tt3d_new/fasta/full_fasta.fasta
 
@@ -101,7 +102,7 @@ fi
 
 
 
-export WANDB_NAME="bernett_lr${lr}_lam${lam}_wd${wd}"
+export WANDB_NAME="bernett_lr${lr}_lam${lam}_wd${wd}_bs${bs}"
 export WANDB_TAGS="bernett,aug,tauri"
 export WANDB_RUN_GROUP="tt3d_backbone"
 export WANDB_JOB_TYPE="train"
@@ -119,7 +120,7 @@ $PY -m dscript.commands.train \
   --lambda "${lam}" \
   --num-epoch 20 \
   --weight-decay "${wd}" \
-  --batch-size 32 \
+  --batch-size "${bs}" \
   --pool-width 9 \
   --kernel-width 7 \
   --dropout-p 0.2 \
