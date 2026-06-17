@@ -3,6 +3,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class FullyConnected(nn.Module):
@@ -52,11 +53,17 @@ class FullyConnected(nn.Module):
 
         # z0 is (b,d,N), z1 is (b,d,M)
 
-        z_dif = torch.abs(z0.unsqueeze(3) - z1.unsqueeze(2))  # (b, d, N)
-        z_mul = z0.unsqueeze(3) * z1.unsqueeze(2)
-        z_cat = torch.cat([z_dif, z_mul], 1)
+        z0 = z0.unsqueeze(3)
+        z1 = z1.unsqueeze(2)
 
-        c = self.conv(z_cat)
+        w_dif, w_mul = self.conv.weight.split(self.D, dim=1)
+
+        z_dif = torch.abs(z0 - z1)
+        c = F.conv2d(z_dif, w_dif, self.conv.bias)
+        del z_dif
+
+        z_mul = z0 * z1
+        c = c + F.conv2d(z_mul, w_mul, None)
         c = self.activation(c)
         c = self.batchnorm(c)
 
@@ -107,6 +114,35 @@ class ContactCNN(nn.Module):
         """
         C = self.cmap(z0, z1)
         return self.predict(C)
+
+    def predict_from_embeddings(self, z0, z1, chunk_size=None):
+        """
+        Predict a contact map directly from embeddings.
+
+        When ``chunk_size`` is set, rows from ``z0`` are processed in chunks with
+        the convolution halo needed to match full-map prediction at chunk edges.
+        This avoids materializing the full hidden broadcast tensor.
+        """
+        if chunk_size is None or chunk_size <= 0 or z0.shape[1] <= chunk_size:
+            return self.predict(self.cmap(z0, z1))
+
+        pad = self.conv.padding[0]
+        n_rows = z0.shape[1]
+        rows = []
+
+        for start in range(0, n_rows, chunk_size):
+            end = min(start + chunk_size, n_rows)
+            halo_start = max(0, start - pad)
+            halo_end = min(n_rows, end + pad)
+
+            C = self.cmap(z0[:, halo_start:halo_end], z1)
+            S = self.predict(C)
+
+            crop_start = start - halo_start
+            crop_end = crop_start + (end - start)
+            rows.append(S[:, :, crop_start:crop_end])
+
+        return torch.cat(rows, dim=2)
 
     def cmap(self, z0, z1):
         """

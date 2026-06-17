@@ -1,4 +1,6 @@
 #!/bin/bash
+# Original-model evaluation launcher. For clean/clear/one/opt variants, use the
+# dedicated test_*.sh scripts.
 #SBATCH --job-name=test
 #SBATCH -p cellbio-dgx
 #SBATCH --gres=gpu:1
@@ -11,32 +13,28 @@
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
 
-module purge
-module load Anaconda3/2024.02
+CONDA_BASE=/opt/apps/rhel9/Anaconda3-2024.02
+source "$CONDA_BASE/etc/profile.d/conda.sh"
+conda activate dscript
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate /hpc/home/wl324/projects/env/dscript
-
-PY=/hpc/home/wl324/projects/env/dscript/bin/python
+PY=/hpc/home/wl324/projects/tt3d/data_archive/env/dscript/bin/python
 
 $PY - <<'EOF'
 import sys, torch
-import torch_optimizer
-print('torch_optimizer OK')
 ok = torch.cuda.is_available() and torch.cuda.device_count() > 0
 print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.device_count())
 sys.exit(0 if ok else 1)
 EOF
 
 TOPSY_TURVY=
-EMBEDDING_DIR=/hpc/home/wl324/projects/tt3d/data_archive/esm2_bernett
+EMBEDDING_DIR=/hpc/home/wl324/projects/tt3d/data_archive/esm2/bernett
 SEQ_DIR=/hpc/home/wl324/projects/tt3d/data_archive/
 FOLDSEEK_FASTA=/hpc/home/wl324/tt3d/p_tt3d_new/fasta/full_fasta.fasta
 FOLDSEEK_VOCAB=/hpc/home/wl324/D-SCRIPT/data/foldseek_vocab.json
 MODEL_PARAMS=""
 DEVICE=0
 # Set default model here:
-MODEL=/hpc/home/wl324/projects/tt3d/data/results/bernett_esm2_trainNew_lr0.0005_lam0.999_wd0.0001/bernett_best_model.sav
+MODEL=/hpc/home/wl324/projects/tt3d/data/results/bernett_esm2_train_lr0.0005_lam0.999_wd0.0001/bernett_best_state_dict.pt
 
 usage() {
     echo "USAGE: ./test.sh [-d DEVICE] [-m MODEL] [-T MODEL_TYPE]
@@ -68,16 +66,14 @@ OUTPUT_FLD=${MODEL%/*}
 OUTPUT_FILE=${MODEL##*/}
 OUTPUT_FILE_PREF=${OUTPUT_FILE%.*}
 OUTPUT_FOLDER=${OUTPUT_FLD}/eval-${OUTPUT_FILE_PREF}
+MODEL_BASENAME=${OUTPUT_FILE_PREF}
+
 
 echo "Output folder: ${OUTPUT_FOLDER}, model: ${MODEL}, DEVICE: ${DEVICE}"
 if [ ! -d ${OUTPUT_FOLDER} ]; then mkdir $OUTPUT_FOLDER; fi
 
-lam=0.999
-lr=0.0005
-wd=0.0001
-
-export WANDB_NAME="bernett_test_lr${lr}_lam${lam}_wd${wd}"
-export WANDB_TAGS="bernett,aug,tauri,tok,softmax"
+export WANDB_NAME="bernett_test_${MODEL_BASENAME}"
+export WANDB_TAGS="bernett,test,eval"
 export WANDB_RUN_GROUP="tt3d_backbone"
 export WANDB_JOB_TYPE="test"
 
@@ -92,7 +88,7 @@ $PY -u -m dscript.commands.evaluate \
 --test ${TEST} \
 -d $DEVICE \
 -o $OP_FILE \
+${MODEL_PARAMS} \
 --log_wandb \
 --wandb-entity bergerlab-mit \
 --wandb-project tt3d_backbone 
-

@@ -615,6 +615,27 @@ def interaction_eval(
     return loss, correct, mse, pr, re, f1, aupr
 
 
+def _count_parameters(model):
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return total_params, trainable_params
+
+
+def _log_parameter_summary(model, output):
+    total_params, trainable_params = _count_parameters(model)
+    log(
+        f"Model parameters: total={total_params:,}, trainable={trainable_params:,}, frozen={total_params - trainable_params:,}",
+        file=output,
+    )
+
+    for module_name, module in model.named_children():
+        module_total, module_trainable = _count_parameters(module)
+        log(
+            f"\t{module_name}: total={module_total:,}, trainable={module_trainable:,}",
+            file=output,
+        )
+
+
 def train_model(args, output):
     if args.log_wandb:
         run = wandb.init(
@@ -806,6 +827,7 @@ def train_model(args, output):
     model.use_cuda = use_cuda
 
     log(model, file=output)
+    _log_parameter_summary(model, output)
 
     if args.checkpoint is not None:
         log(

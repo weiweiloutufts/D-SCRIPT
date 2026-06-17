@@ -10,13 +10,11 @@
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
-module purge
-module load Anaconda3/2024.02
+CONDA_BASE=/opt/apps/rhel9/Anaconda3-2024.02
+source "$CONDA_BASE/etc/profile.d/conda.sh"
+conda activate dscript
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate /hpc/home/wl324/projects/env/dscript
-
-PY=/hpc/home/wl324/projects/env/dscript/bin/python
+PY=/hpc/home/wl324/projects/tt3d/data_archive/env/dscript/bin/python
 
 
 $PY - <<'EOF'
@@ -103,7 +101,7 @@ fi
 
 
 export WANDB_NAME="bernett_lr${lr}_lam${lam}_wd${wd}_bs${bs}"
-export WANDB_TAGS="bernett,aug,tauri"
+export WANDB_TAGS="bernett,train,aug,tauri"
 export WANDB_RUN_GROUP="tt3d_backbone"
 export WANDB_JOB_TYPE="train"
 
@@ -131,4 +129,3 @@ $PY -m dscript.commands.train \
   --log_wandb \
   --wandb-entity bergerlab-mit \
   --wandb-project tt3d_backbone
-

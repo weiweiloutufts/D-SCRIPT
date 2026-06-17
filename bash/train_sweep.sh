@@ -11,13 +11,11 @@
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=weiwei.lou@tufts.edu
 
-module purge
-module load Anaconda3/2024.02
+CONDA_BASE=/opt/apps/rhel9/Anaconda3-2024.02
+source "$CONDA_BASE/etc/profile.d/conda.sh"
+conda activate dscript
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate /hpc/home/wl324/projects/env/dscript
-
-PY=/hpc/home/wl324/projects/env/dscript/bin/python
+PY=/hpc/home/wl324/projects/tt3d/data_archive/env/dscript/bin/python
 
 
 $PY - <<'EOF'
@@ -40,5 +38,5 @@ export OUTPUT_PREFIX="run_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 
 mkdir -p /hpc/home/wl324/projects/tt3d/data/outputs
 
-export WANDB_TAGS="bernett,aug,tauri"
+export WANDB_TAGS="bernett,train,aug,tauri"
 wandb agent bergerlab-mit/tt3d_backbone/5onopuko --count 1

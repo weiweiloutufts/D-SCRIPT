@@ -1,8 +1,9 @@
 import torch
+import h5py
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
-from functools import lru_cache
+from collections import OrderedDict
 import sys
 from dscript.utils import log
 from torch.nn.utils.rnn import pad_sequence
@@ -75,6 +76,103 @@ class EmbeddingLoader:
         if prot_name not in self.embeddings_cpu:
             raise KeyError(f"Protein {prot_name} not found")
         return self.embeddings_cpu[prot_name]
+
+
+class LazyEmbeddingStore:
+    def __init__(
+        self,
+        source,
+        protein_names,
+        mode="pt_dir",
+        cache_size=256,
+        num_workers=4,
+    ):
+        self.source = Path(source)
+        self.mode = mode
+        self.cache_size = cache_size
+        self._cache = OrderedDict()
+        self.missing = []
+        self.protein_names = set(protein_names)
+
+        self._validate_paths(num_workers)
+        if self.missing:
+            log(
+                f"Missing files for {len(self.missing)} proteins (e.g., {self.missing[:8]})"
+            )
+            sys.exit(1)
+
+        log(
+            f"Validated {len(self.protein_names)} embeddings for lazy loading "
+            f"(mode={self.mode}, cache_size={self.cache_size})."
+        )
+
+    def _path_for(self, prot):
+        return self.source / bucket_prefix2(prot) / f"{prot}.pt"
+
+    def _validate_one(self, prot):
+        if self.mode == "pt_dir":
+            return prot if self._path_for(prot).exists() else None
+        if self.mode == "hdf5":
+            return prot
+        raise ValueError(f"Unsupported embedding mode: {self.mode}")
+
+    def _validate_paths(self, num_workers):
+        if self.mode == "pt_dir":
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                results = list(
+                    tqdm(
+                        executor.map(self._validate_one, sorted(self.protein_names)),
+                        total=len(self.protein_names),
+                        desc="Validating embedding paths",
+                    )
+                )
+            self.missing = [
+                prot
+                for prot, result in zip(sorted(self.protein_names), results)
+                if result is None
+            ]
+            return
+
+        if self.mode == "hdf5":
+            with h5py.File(self.source, "r") as h5fi:
+                available = set(h5fi.keys())
+            self.missing = sorted(self.protein_names - available)
+            return
+
+        raise ValueError(f"Unsupported embedding mode: {self.mode}")
+
+    def _load_one(self, prot_name):
+        if self.mode == "pt_dir":
+            emb = torch.load(
+                self._path_for(prot_name), map_location="cpu", weights_only=True
+            )
+        elif self.mode == "hdf5":
+            with h5py.File(self.source, "r") as h5fi:
+                emb = torch.from_numpy(h5fi[prot_name][:, :])
+        else:
+            raise ValueError(f"Unsupported embedding mode: {self.mode}")
+
+        if isinstance(emb, torch.Tensor):
+            emb = emb.detach().cpu()
+        return emb
+
+    def __contains__(self, prot_name):
+        return prot_name in self.protein_names and prot_name not in self.missing
+
+    def __getitem__(self, prot_name):
+        if prot_name in self._cache:
+            emb = self._cache.pop(prot_name)
+            self._cache[prot_name] = emb
+            return emb
+
+        if prot_name not in self:
+            raise KeyError(f"Protein {prot_name} not found")
+
+        emb = self._load_one(prot_name)
+        self._cache[prot_name] = emb
+        if len(self._cache) > self.cache_size:
+            self._cache.popitem(last=False)
+        return emb
 
 
 def batch_embeddings_from_pairs(

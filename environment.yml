@@ -7,10 +7,11 @@ channels:
 dependencies:
   - python>=3.10
   - pip
-  - pytorch>=1.13
+  - pytorch::pytorch>=2.6
+  - pytorch::pytorch-cuda=12.1
   - biotite==1.2.0
   - h5py
-  - huggingface_hub
+  - huggingface_hub>=1.5.0
   - matplotlib
   - numpy
   - pandas
@@ -21,4 +22,8 @@ dependencies:
   - tqdm
   - loguru
   - pip:
+    - transformers
+    - sentencepiece
+    - tiktoken
+    - safetensors
     - -e .

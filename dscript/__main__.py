@@ -13,6 +13,13 @@ from .commands import (
     predict_block,
     predict_serial,
     train,
+    train_res_bidirect,
+    train_res_enc_auxi,
+    train_res_enc_fs_auxi,
+    train_res_enc_lt,
+    train_res_enc_lt_auxi,
+    train_res_tm,
+    train_res_tm_auxi,
 )
 from .commands.embed import EmbeddingArguments
 from .commands.evaluate import EvaluateArguments
@@ -21,6 +28,13 @@ from .commands.predict_bipartite import BipartitePredictionArguments
 from .commands.predict_block import BlockedPredictionArguments
 from .commands.predict_serial import PredictionArguments
 from .commands.train import TrainArguments
+from .commands.train_res_bidirect import TrainArguments as BidirectTrainArguments
+from .commands.train_res_enc_auxi import TrainArguments as AuxiTrainArguments
+from .commands.train_res_enc_fs_auxi import TrainArguments as FSAuxiTrainArguments
+from .commands.train_res_enc_lt import TrainArguments as LTTrainArguments
+from .commands.train_res_enc_lt_auxi import TrainArguments as LTAuxiTrainArguments
+from .commands.train_res_tm import TrainArguments as TMTrainArguments
+from .commands.train_res_tm_auxi import TrainArguments as TMAuxiTrainArguments
 
 DScriptArguments = (
     EmbeddingArguments
@@ -29,6 +43,13 @@ DScriptArguments = (
     | BlockedPredictionArguments
     | BipartitePredictionArguments
     | TrainArguments
+    | BidirectTrainArguments
+    | AuxiTrainArguments
+    | FSAuxiTrainArguments
+    | LTTrainArguments
+    | LTAuxiTrainArguments
+    | TMTrainArguments
+    | TMAuxiTrainArguments
     | Extract3DiArguments
 )
 
@@ -66,6 +87,13 @@ def main():
 
     modules = {
         "train": train,
+        "train_res_bidirect": train_res_bidirect,
+        "train_res_enc_auxi": train_res_enc_auxi,
+        "train_res_enc_fs_auxi": train_res_enc_fs_auxi,
+        "train_res_enc_lt": train_res_enc_lt,
+        "train_res_enc_lt_auxi": train_res_enc_lt_auxi,
+        "train_res_tm": train_res_tm,
+        "train_res_tm_auxi": train_res_tm_auxi,
         "embed": embed,
         "evaluate": evaluate,
         "predict_serial": predict_serial,

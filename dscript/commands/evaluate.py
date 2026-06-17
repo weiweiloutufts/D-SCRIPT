@@ -8,6 +8,7 @@ import argparse
 import datetime
 import json
 import sys
+import time
 from collections.abc import Callable
 from typing import NamedTuple
 import torch.nn.functional as F
@@ -34,6 +35,9 @@ from pathlib import Path
 from dscript.loading import LoadingPool
 
 from dscript.models.interaction import InteractionInputs
+from dscript.models.interaction import ModelInteraction
+from dscript.models.contact import ContactCNN
+from dscript.models.embedding import FullyConnectedEmbed
 
 from ..foldseek import get_foldseek_onehot, build_backbone_vocab
 from ..parallel_embedding_loader import EmbeddingLoader, add_batch_dim_if_needed
@@ -71,6 +75,36 @@ def add_args(parser):
         "--embeddings",
         help="directory containing per-protein `.pt` embeddings or HDF5 file with embeddings",
         required=True,
+    )
+    parser.add_argument(
+        "--input-dim",
+        type=int,
+        default=1280,
+        help="input embedding dimension used to initialize the original model when loading a state_dict checkpoint (default: 6165)",
+    )
+    parser.add_argument(
+        "--projection-dim",
+        type=int,
+        default=100,
+        help="projection dimension used to initialize the original model when loading a state_dict checkpoint (default: 100)",
+    )
+    parser.add_argument(
+        "--dropout-p",
+        type=float,
+        default=0.5,
+        help="embedding dropout used to initialize the original model when loading a state_dict checkpoint (default: 0.5)",
+    )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=50,
+        help="contact hidden dimension used to initialize the original model when loading a state_dict checkpoint (default: 50)",
+    )
+    parser.add_argument(
+        "--kernel-width",
+        type=int,
+        default=7,
+        help="contact kernel width used to initialize the original model when loading a state_dict checkpoint (default: 7)",
     )
     parser.add_argument("-o", "--outfile", help="Output file to write results")
     parser.add_argument(
@@ -130,8 +164,57 @@ def add_args(parser):
         "--backbone3di_fasta",
         help="FASTA file containing the 12 state representation",
     )
+    parser.add_argument(
+        "--no-w",
+        action="store_true",
+        help="disable the weight matrix when instantiating the original model for state_dict checkpoints",
+    )
+    parser.add_argument(
+        "--no-sigmoid",
+        action="store_true",
+        help="disable the final sigmoid activation when instantiating the original model for state_dict checkpoints",
+    )
+    parser.add_argument(
+        "--do-pool",
+        action="store_true",
+        help="enable max-pool when instantiating the original model for state_dict checkpoints",
+    )
+    parser.add_argument(
+        "--pool-width",
+        type=int,
+        default=9,
+        help="pool width when instantiating the original model for state_dict checkpoints (default: 9)",
+    )
 
     return parser
+
+
+def _build_original_model(args, use_cuda: bool, fold_vocab=None, backbone_vocab=None):
+    projection_dim = args.projection_dim
+    embedding_model = FullyConnectedEmbed(
+        args.input_dim,
+        projection_dim,
+        dropout=args.dropout_p,
+    )
+
+    contact_in_dim = projection_dim
+    if args.allow_foldseek:
+        contact_in_dim += len(fold_vocab or {})
+    if args.allow_backbone3di:
+        contact_in_dim += len(backbone_vocab or {})
+
+    contact_model = ContactCNN(contact_in_dim, args.hidden_dim, args.kernel_width)
+    model = ModelInteraction(
+        embedding_model,
+        contact_model,
+        use_cuda,
+        do_w=not args.no_w,
+        pool_size=args.pool_width,
+        do_pool=args.do_pool,
+        do_sigmoid=not args.no_sigmoid,
+    )
+    model.use_cuda = use_cuda
+    return model
 
 
 def plot_eval_predictions(labels, predictions, path="figure"):
@@ -197,12 +280,17 @@ def log_eval_metrics(
     out_path_prefix: str,
     threshold: float = 0.5,
     split_name: str = "test",
+    inference_seconds: float | None = None,
+    wandb_run=None,
 ) -> None:
 
     # labels = np.asarray(labels, dtype=np.float32).reshape(-1)
     # phats = np.asarray(phats, dtype=np.float32).reshape(-1)
 
     n = int(labels.shape[0])
+    inference_seconds_per_pair = (
+        inference_seconds / n if inference_seconds is not None and n > 0 else None
+    )
 
     # Loss (BCE over probabilities)
     if n == 0:
@@ -237,6 +325,12 @@ def log_eval_metrics(
         mse = float(mean_squared_error(y_true_int, p_prob))
 
     with open(out_path_prefix + "_metrics.txt", "w+") as f:
+        inference_text = (
+            f"\n[{split_name}] inference_seconds: {inference_seconds:.6f}"
+            f"\n[{split_name}] inference_seconds_per_pair: {inference_seconds_per_pair:.6f}"
+            if inference_seconds is not None
+            else ""
+        )
         log(
             f"[{split_name}] n: {n}\n"
             f"[{split_name}] threshold: {threshold}\n"
@@ -247,21 +341,25 @@ def log_eval_metrics(
             f"[{split_name}] mse: {mse:.6f}\n"
             f"[{split_name}] precision: {prec:.6f}\n"
             f"[{split_name}] recall: {rec:.6f}\n"
-            f"[{split_name}] f1: {f1:.6f}",
+            f"[{split_name}] f1: {f1:.6f}"
+            f"{inference_text}",
             file=f,
         )
-    if args.log_wandb:
-        run.log(
-            {
-                "test/loss": loss,
-                "test/accuracy": acc,
-                "test/mse": mse,
-                "test/precision": prec,
-                "test/recall": rec,
-                "test/f1": f1,
-                "test/aupr": aupr,
-            }
-        )
+    if wandb_run is not None:
+        payload = {
+            "test/loss": loss,
+            "test/accuracy": acc,
+            "test/mse": mse,
+            "test/precision": prec,
+            "test/recall": rec,
+            "test/f1": f1,
+            "test/aupr": aupr,
+        }
+        if inference_seconds is not None:
+            payload["test/inference_seconds"] = inference_seconds
+        if inference_seconds_per_pair is not None:
+            payload["test/inference_seconds_per_pair"] = inference_seconds_per_pair
+        wandb_run.log(payload)
 
 
 def main(args):
@@ -270,8 +368,9 @@ def main(args):
 
     :meta private:
     """
+    wandb_run = None
     if args.log_wandb:
-        run = wandb.init(
+        wandb_run = wandb.init(
             # Set the wandb entity where your project will be logged (generally your team name).
             entity=args.wandb_entity,
             # Set the wandb project where this run will be logged.
@@ -317,14 +416,43 @@ def main(args):
 
     # Load Model
     model_path = args.model
-    if use_cuda:
-        model = torch.load(model_path, weights_only=False, map_location="cuda")
-        model.use_cuda = True
+    map_location = "cuda" if use_cuda else torch.device("cpu")
+    checkpoint_obj = torch.load(model_path, weights_only=False, map_location=map_location)
+
+    if isinstance(checkpoint_obj, torch.nn.Module):
+        model = checkpoint_obj
+        if not use_cuda:
+            model = model.cpu()
+        model.use_cuda = use_cuda
+        log(f"Loaded full model object from {model_path}")
     else:
-        model = torch.load(
-            model_path, map_location=torch.device("cpu"), weights_only=False
-        ).cpu()
-        model.use_cuda = False
+        state_dict = (
+            checkpoint_obj["state_dict"]
+            if isinstance(checkpoint_obj, dict) and "state_dict" in checkpoint_obj
+            else checkpoint_obj
+        )
+        if not isinstance(state_dict, dict):
+            raise TypeError(
+                f"Unsupported checkpoint format in {model_path}: {type(checkpoint_obj)}"
+            )
+
+        model = _build_original_model(
+            args,
+            use_cuda,
+            fold_vocab=fold_vocab,
+            backbone_vocab=backbone_vocab,
+        )
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+        if missing_keys:
+            log(f"Missing keys when loading state_dict: {missing_keys}")
+        if unexpected_keys:
+            log(f"Unexpected keys when loading state_dict: {unexpected_keys}")
+        log(f"Loaded state_dict checkpoint from {model_path}")
+
+    if use_cuda:
+        model = model.cuda()
+    else:
+        model = model.cpu()
 
     emb_path = Path(args.embeddings)
 
@@ -371,6 +499,7 @@ def main(args):
     # Evaluate
 
     model.eval()
+    inference_start = time.perf_counter()
     with torch.no_grad():
         logits = []
         labels = []
@@ -437,6 +566,10 @@ def main(args):
                 outFile.write(f"{n0}\t{n1}\t{label}\t{prob_val:.5}\n")
             except Exception as e:
                 sys.stderr.write(f"{n0} x {n1} - {e}")
+    inference_seconds = time.perf_counter() - inference_start
+    log(f"Inference time: {inference_seconds:.6f}s")
+    if len(labels) > 0:
+        log(f"Inference time per pair: {inference_seconds / len(labels):.6f}s")
 
     logits = np.array(logits, dtype=np.float32)
     labels = np.array(labels, dtype=np.int64)
@@ -448,6 +581,8 @@ def main(args):
         out_path_prefix=outPath,
         threshold=0.5,
         split_name="test",
+        inference_seconds=inference_seconds,
+        wandb_run=wandb_run,
     )
     
 

@@ -139,6 +139,7 @@ def log_eval_metrics(
     threshold: float = 0.5,
     split_name: str = "test",
     inference_seconds: float | None = None,
+    inference_seconds_per_pair: float | None = None,
     wandb_run=None,
 ) -> None:
     n = int(labels.shape[0])
@@ -171,6 +172,11 @@ def log_eval_metrics(
             if inference_seconds is not None
             else ""
         )
+        inference_per_pair_text = (
+            f"\n[{split_name}] inference_seconds_per_pair: {inference_seconds_per_pair:.6f}"
+            if inference_seconds_per_pair is not None
+            else ""
+        )
         log(
             f"[{split_name}] n: {n}\n"
             f"[{split_name}] threshold: {threshold}\n"
@@ -182,7 +188,8 @@ def log_eval_metrics(
             f"[{split_name}] precision: {prec:.6f}\n"
             f"[{split_name}] recall: {rec:.6f}\n"
             f"[{split_name}] f1: {f1:.6f}"
-            f"{inference_text}",
+            f"{inference_text}"
+            f"{inference_per_pair_text}",
             file=f,
         )
 
@@ -199,6 +206,8 @@ def log_eval_metrics(
         }
         if inference_seconds is not None:
             payload["test/inference_seconds"] = inference_seconds
+        if inference_seconds_per_pair is not None:
+            payload["test/inference_seconds_per_pair"] = inference_seconds_per_pair
         wandb_run.log(payload)
 
 
@@ -316,6 +325,7 @@ def main(args):
             labels.append(label)
             out_file.write(f"{n0}\t{n1}\t{label}\t{prob_val:.5f}\n")
     inference_seconds = time.perf_counter() - inference_start
+    inference_seconds_per_pair = inference_seconds / len(labels) if labels else None
     log(f"Inference time: {inference_seconds:.6f}s")
 
     logits = np.array(logits, dtype=np.float32)
@@ -329,6 +339,7 @@ def main(args):
         threshold=0.5,
         split_name="test",
         inference_seconds=inference_seconds,
+        inference_seconds_per_pair=inference_seconds_per_pair,
         wandb_run=wandb_run,
     )
     plot_eval_predictions(labels, probs, out_path)

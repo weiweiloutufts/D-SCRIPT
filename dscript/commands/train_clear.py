@@ -594,6 +594,21 @@ def _count_parameters(model):
     return total_params, trainable_params
 
 
+def _log_parameter_summary(model, output):
+    total_params, trainable_params = _count_parameters(model)
+    log(
+        f"Model parameters: total={total_params:,}, trainable={trainable_params:,}, frozen={total_params - trainable_params:,}",
+        file=output,
+    )
+
+    for module_name, module in model.named_children():
+        module_total, module_trainable = _count_parameters(module)
+        log(
+            f"\t{module_name}: total={module_total:,}, trainable={module_trainable:,}",
+            file=output,
+        )
+
+
 def _sync_cuda(use_cuda):
     if use_cuda and torch.cuda.is_available():
         torch.cuda.synchronize()
@@ -807,11 +822,7 @@ def train_model(args, output):
     model.use_cuda = use_cuda
 
     log(model, file=output)
-    total_params, trainable_params = _count_parameters(model)
-    log(
-        f"Model parameters: total={total_params:,}, trainable={trainable_params:,}, frozen={total_params - trainable_params:,}",
-        file=output,
-    )
+    _log_parameter_summary(model, output)
 
     if args.checkpoint is not None:
         log(
