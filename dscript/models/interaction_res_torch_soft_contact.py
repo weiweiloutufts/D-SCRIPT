@@ -250,7 +250,7 @@ class PairClassifierTokens(nn.Module):
         g_map = self.map_g_proj(g_fused)[:, :, None, None].expand(
             batch_size, self.map_global_channels, g, g
         )
-        x_pool = torch.cat([x_pool, 0.5 * g_map], dim=1)
+        x_pool = torch.cat([x_pool, g_map], dim=1)
         map_feat = self.map_stage1(x_pool)
         map_feat = map_feat + self.map_skip(x_pool)
 
