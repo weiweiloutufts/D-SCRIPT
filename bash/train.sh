@@ -38,6 +38,9 @@ wd=0.001
 bs=48
 
 TOPSY_TURVY=
+TRAIN_MODULE=dscript.commands.train
+LAMBDA_CMD="--lambda ${lam}"
+NUM_EPOCH_ARG=--num-epoch
 TRAIN=/hpc/home/wl324/projects/tt3d/data_archive/bernett_train.tsv
 TEST=/hpc/home/wl324/projects/tt3d/data_archive/bernett_validation.tsv
 
@@ -53,7 +56,7 @@ FOLDSEEK_FASTA=/hpc/home/wl324/tt3d/p_tt3d_new/fasta/full_fasta.fasta
 DEVICE=0
 
 usage() {
-    echo "Usage: ./train.sh [-d DEVICE] [-v] [-f] [-F foldseek_fasta_file] [-e EMB_DIR] [-E EMB_DIM]
+    echo "Usage: ./train.sh [-d DEVICE] [-v] [-f] [-F foldseek_fasta_file] [-e EMB_DIR] [-E EMB_DIM] [-S]
 
     -d: CUDA device index (default: 0)
     -v: When set, trains a Topsy-Turvy model
@@ -61,10 +64,11 @@ usage() {
     -F: Foldseek 3di sequences fasta file (used only when -f is set)
     -e: Embedding h5py file or directory (default: $EMBEDDING)
     -E: Embedding dimension (default: $EMBEDDING_DIM)
+    -S: Use the symmetric residual trainer
     "
 }
 
-while getopts "d:t:fF:T:e:E:vo:p:" args; do
+while getopts "d:t:fF:T:e:E:vo:p:S" args; do
     case $args in
         d) DEVICE=${OPTARG} ;;
         t) TRAIN=${OPTARG} ;;
@@ -74,6 +78,7 @@ while getopts "d:t:fF:T:e:E:vo:p:" args; do
         v) TOPSY_TURVY="--topsy-turvy --glider-weight 0.2 --glider-thres 0.925" ;;
         o) OUTPUT_FOLDER=${OUTPUT_BASE}/${OPTARG} ;;
         p) OUTPUT_PREFIX=${OPTARG} ;;
+        S) TRAIN_MODULE=dscript.commands.train_res_symmetric; LAMBDA_CMD=; NUM_EPOCH_ARG=--num-epochs ;;
         f) FOLDSEEK="" ;;
         F) FOLDSEEK_FASTA=${OPTARG} ;;
         *) usage; exit 1 ;;
@@ -91,7 +96,11 @@ fi
 
 FOLDSEEK_CMD=""
 if [ -n "$FOLDSEEK" ]; then
-    FOLDSEEK_CMD="--allow_foldseek --foldseek_fasta ${FOLDSEEK_FASTA}" # --add_foldseek_after_projection"
+    if [ "$TRAIN_MODULE" = "dscript.commands.train_res_symmetric" ]; then
+        FOLDSEEK_CMD="--allow_foldseek --foldseek_fasta ${FOLDSEEK_FASTA}"
+    else
+        FOLDSEEK_CMD="--allow_foldseek --foldseek_fasta ${FOLDSEEK_FASTA}" # --add_foldseek_after_projection"
+    fi
 fi
 
 if [ ! -d "${OUTPUT_FOLDER}" ]; then
@@ -105,7 +114,7 @@ export WANDB_TAGS="bernett,train,aug,tauri"
 export WANDB_RUN_GROUP="tt3d_backbone"
 export WANDB_JOB_TYPE="train"
 
-$PY -m dscript.commands.train \
+$PY -m "${TRAIN_MODULE}" \
   --train "${TRAIN}" \
   --test "${TEST}" \
   ${EMBEDDING_FLAG} \
@@ -115,8 +124,8 @@ $PY -m dscript.commands.train \
   --save-prefix "${OUTPUT_FOLDER}/${OUTPUT_PREFIX}" \
   --device "${DEVICE}" \
   --lr "${lr}" \
-  --lambda "${lam}" \
-  --num-epoch 20 \
+  ${LAMBDA_CMD} \
+  "${NUM_EPOCH_ARG}" 20 \
   --weight-decay "${wd}" \
   --batch-size "${bs}" \
   --pool-width 9 \

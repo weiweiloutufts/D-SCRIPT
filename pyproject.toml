@@ -61,7 +61,7 @@ dscript = "dscript.__main__:main"
 version = {attr = "dscript.__version__"}
 
 [tool.setuptools.packages.find]
-include = ["dscript*"]
+include = ["dscript*", "spiral_attention*"]
 
 [tool.ruff]
 line-length = 90

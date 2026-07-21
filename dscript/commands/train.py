@@ -505,7 +505,7 @@ def interaction_grad(
 
     # --- BCE (make sure shapes match)
     logits = p_hat.view(-1).float()  # rename it logits everywhere
-    bce_loss = F.binary_cross_entropy_with_logits(logits, y_mix)
+    label_loss = F.binary_cross_entropy_with_logits(logits, y_mix)
 
     if run_tt:
         g_score = []
@@ -521,9 +521,9 @@ def interaction_grad(
             g_score = g_score.cuda()
 
         glider_loss = F.binary_cross_entropy(p_hat.float(), g_score.float())
-        accuracy_loss = (glider_weight * glider_loss) + ((1 - glider_weight) * bce_loss)
+        accuracy_loss = (glider_weight * glider_loss) + ((1 - glider_weight) * label_loss)
     else:
-        accuracy_loss = bce_loss
+        accuracy_loss = label_loss
 
     # representation_loss = torch.mean(c_map_mag)
     representation_loss = c_map_mag.pow(2).mean()

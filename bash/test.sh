@@ -32,34 +32,46 @@ SEQ_DIR=/hpc/home/wl324/projects/tt3d/data_archive/
 FOLDSEEK_FASTA=/hpc/home/wl324/tt3d/p_tt3d_new/fasta/full_fasta.fasta
 FOLDSEEK_VOCAB=/hpc/home/wl324/D-SCRIPT/data/foldseek_vocab.json
 MODEL_PARAMS=""
+EVAL_MODULE=dscript.commands.evaluate
 DEVICE=0
 # Set default model here:
 MODEL=/hpc/home/wl324/projects/tt3d/data/results/bernett_esm2_train_lr0.0005_lam0.999_wd0.0001/bernett_best_state_dict.pt
 
 usage() {
-    echo "USAGE: ./test.sh [-d DEVICE] [-m MODEL] [-T MODEL_TYPE]
+    echo "USAGE: ./test.sh [-d DEVICE] [-m MODEL] [-T MODEL_TYPE] [-S]
 
     OPTIONS:
 
     -d DEVICE: Device used
     -m MODEL: The model sav file
     -T: Set this flag if if the model passed by the '-m MODEL' command is a TT3D Model. Unset this for Topsy-Turvy/D-SCRIPT
+    -S: Use the symmetric residual evaluator
     "
 }
 
 
-while getopts "d:m:T" args; do
+while getopts "d:m:TS" args; do
     case $args in
         d) DEVICE=${OPTARG}
         ;;
         m) MODEL=${OPTARG}
         ;;
-        T) MODEL_PARAMS="${MODEL_PARAMS} --add_foldseek_after_projection --foldseek_vocab ${FOLDSEEK_VOCAB} --foldseek_fasta ${FOLDSEEK_FASTA} --allow_foldseek"
+        T) FOLDSEEK=1
+        ;;
+        S) EVAL_MODULE=dscript.commands.evaluate_res_symmetric
         ;;
         *) usage
         exit 1;
     esac
 done
+
+if [ ! -z "${FOLDSEEK:-}" ]; then
+    if [ "$EVAL_MODULE" = "dscript.commands.evaluate_res_symmetric" ]; then
+        MODEL_PARAMS="${MODEL_PARAMS} --foldseek_fasta ${FOLDSEEK_FASTA} --allow_foldseek"
+    else
+        MODEL_PARAMS="${MODEL_PARAMS} --add_foldseek_after_projection --foldseek_vocab ${FOLDSEEK_VOCAB} --foldseek_fasta ${FOLDSEEK_FASTA} --allow_foldseek"
+    fi
+fi
 
 # Construct the folder
 OUTPUT_FLD=${MODEL%/*}
@@ -82,7 +94,7 @@ TEST=${SEQ_DIR}/bernett_test.tsv
 OP_FOLDER_ORG=${OUTPUT_FOLDER}/
 if [ ! -d ${OP_FOLDER_ORG} ]; then mkdir -p ${OP_FOLDER_ORG}; fi
 OP_FILE=${OP_FOLDER_ORG}/${OUTPUT_FILE}
-$PY -u -m dscript.commands.evaluate \
+$PY -u -m "${EVAL_MODULE}" \
 --model ${MODEL} \
 --embeddings ${EMBEDDING} \
 --test ${TEST} \

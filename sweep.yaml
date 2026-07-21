@@ -9,8 +9,8 @@ metric:
 parameters:
   lr:
     values: [0.0001,0.0005, 0.001]
-  lambda:
-    values: [0.99, 0.999]
+  soft-positive-weight:
+    values: [0.5]
   weight-decay:
     values: [0.0005, 0.001]
 
@@ -19,7 +19,7 @@ command:
   - ${env}
   - python
   - -m
-  - dscript.commands.train
+  - dscript.commands.train_res_symmetric
 
   - --train
   - /hpc/home/wl324/projects/tt3d/data_archive/bernett_train.tsv
@@ -58,7 +58,5 @@ command:
   - --wandb-project
   - tt3d_backbone
   
-
-
 
 
