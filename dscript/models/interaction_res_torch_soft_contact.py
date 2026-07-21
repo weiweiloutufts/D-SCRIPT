@@ -244,6 +244,7 @@ class PairClassifierTokens(nn.Module):
         return torch.cat(rope_parts, dim=-1)
 
     def _extract_map_summary(self, map_input: torch.Tensor, g_fused: torch.Tensor):
+        #Prepare Map
         g = self.grid
         batch_size = map_input.shape[0]
         x_pool = F.adaptive_avg_pool2d(map_input, (g, g))
@@ -251,14 +252,18 @@ class PairClassifierTokens(nn.Module):
             batch_size, self.map_global_channels, g, g
         )
         x_pool = torch.cat([x_pool, g_map], dim=1)
+        
+        # Conv Stage 1 + Skip
         map_feat = self.map_stage1(x_pool)
         map_feat = map_feat + self.map_skip(x_pool)
-
+        
+        # Global Conditioning + Stage 2
         batch_size, channels, _, _ = map_feat.shape
         g_ctx = self.g_inject(g_fused)[:, :, None, None]
         map_feat = F.gelu(map_feat + g_ctx)
         map_feat = map_feat + self.map_stage2(map_feat)
-
+        
+        # Pool
         feat_avg = F.adaptive_avg_pool2d(map_feat, 1).flatten(1)
         feat_max = F.adaptive_max_pool2d(map_feat, 1).flatten(1)
         feat = torch.cat([feat_avg, feat_max], dim=1)
@@ -276,6 +281,7 @@ class PairClassifierTokens(nn.Module):
             f"feat_proj {feat_proj.shape} vs g_fused {g_fused.shape}"
         )
 
+        # Fuse
         feat = torch.cat(
             [feat, g_fused, feat_proj + g_fused, feat_proj * g_fused], dim=1
         )
