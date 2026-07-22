@@ -244,14 +244,20 @@ class PairClassifierTokens(nn.Module):
         return torch.cat(rope_parts, dim=-1)
 
     def _extract_map_summary(self, map_input: torch.Tensor, g_fused: torch.Tensor):
-        #Prepare Map
+        # Prepare Map
         g = self.grid
         batch_size = map_input.shape[0]
-        x_pool = F.adaptive_avg_pool2d(map_input, (g, g))
+
+        # Average pooling captures broad interaction patterns, while max
+        # pooling preserves strong localized contacts that averaging can dilute.
+        x_avg = F.adaptive_avg_pool2d(map_input, (g, g))
+        x_max = F.adaptive_max_pool2d(map_input, (g, g))
+        x_pool = x_avg + 0.5 * x_max
+
         g_map = self.map_g_proj(g_fused)[:, :, None, None].expand(
             batch_size, self.map_global_channels, g, g
         )
-        x_pool = torch.cat([x_pool, g_map], dim=1)
+        x_pool = torch.cat([x_pool, 0.5 * g_map], dim=1)
         
         # Conv Stage 1 + Skip
         map_feat = self.map_stage1(x_pool)
