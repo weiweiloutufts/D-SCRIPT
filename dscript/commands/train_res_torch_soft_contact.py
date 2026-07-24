@@ -1445,7 +1445,7 @@ def train_model(args, output, interaction_grad_fn=None):
         # for restarts to have effect. Lowered to 4 so restarts can trigger
         # in the middle of a standard 10-epoch run. Lowered again to 2 for
         # short sweeps where validation often peaks around epoch 2.
-        start_restart_epoch=4,
+        start_restart_epoch=2,
     )
 
     log(f'Using save prefix "{save_prefix}"', file=output)

@@ -508,7 +508,7 @@ class ModelInteraction(nn.Module):
         c_map, g_add, g_mul, g_abs = self.cpred(cpred_inputs)
         g = torch.cat([g_add, g_mul, g_abs], dim=1)
         yhat = self._apply_weight(c_map)
-
+        
         logit, feat, stage_map = self.clf(yhat, g)
         return stage_map, logit, feat
 
